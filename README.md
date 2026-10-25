@@ -83,7 +83,14 @@ Output: `Specter-v{version}.zip`
 bash tests/run.sh          # Shell tests. 12 files, 321 assertions.
 npm test                   # TS tests. 10 files, 94 tests (vitest + happy-dom).
 npx tsc --noEmit           # TypeScript strict check
+python3 tests/test_https_download.py  # Local TLS tests; requires JDK + OpenSSL
+bash deps/apk/build.sh     # Rebuild bundled Android helpers after Java changes
+python3 tests/android_helpers.py --serial DEVICE --dex src/deps/classes.dex
 ```
+
+Downloads validate TLS certificates and hostnames, using curl or the bundled Android
+HTTPS helper. Automatic module installation also requires the selected GitHub
+release asset's SHA-256 digest; missing or mismatched digests stop installation.
 
 ### CI
 
