@@ -38,6 +38,9 @@ Specter is a complete rewrite of what I originally built as Yurikey.
 4. Reboot. First-boot runs backup, target, security patch, keybox.
 5. Open the WebUI
 
+For Pixel 10 on Android 17, see the [tested compatibility setup](PIXEL10_ANDROID17.md)
+for the first-API correction, attestation backend requirements, and AICore setup.
+
 ## Features
 
 - **Keybox**: multi-source catalog, custom keybox, Google revocation, backup/restore

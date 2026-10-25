@@ -146,6 +146,89 @@ pif_merge_spoof_keys() {
   unset _pmsk_line _pmsk_k
 }
 
+# Older Fork generators use API 32 even for Pixel 10 fingerprints.
+# Only call for generated props; imported fingerprints must remain unchanged.
+pif_normalize_generated_first_api() {
+  [ -f "$1" ] || return 1
+  _pfg_file=$(readlink -f "$1" 2>/dev/null) || {
+    log_e "PIF" "Unable to resolve generated fingerprint path $1"
+    unset _pfg_file
+    return 1
+  }
+  _pfg_device=$(pif_prop_get "$_pfg_file" FINGERPRINT | sed -n 's@^google/[^/]*/\([^/:]*\):.*@\1@p')
+  case "$_pfg_device" in
+    frankel|blazer|mustang|rango) ;;
+    *) unset _pfg_device _pfg_file; return 0 ;;
+  esac
+
+  _pfg_fork=0
+  case "$2" in *Fork*) _pfg_fork=1 ;; esac
+  _pfg_tmp=$(mktemp 2>/dev/null) || {
+    log_e "PIF" "Unable to prepare Pixel 10 launch API correction"
+    unset _pfg_device _pfg_fork _pfg_tmp _pfg_file
+    return 1
+  }
+  _pfg_rc=0
+  _pfg_changed=0
+  _pfg_stage=""
+  if awk -v fork="$_pfg_fork" '
+    /^DEVICE_INITIAL_SDK_INT=/ { print "DEVICE_INITIAL_SDK_INT=36"; java_api=1; next }
+    /^\*api_level=/ { print "*api_level=36"; prop_api=1; next }
+    { print }
+    END {
+      if (!java_api) print "DEVICE_INITIAL_SDK_INT=36"
+      if (fork && !prop_api) print "*api_level=36"
+    }
+  ' "$_pfg_file" > "$_pfg_tmp"; then
+    if ! cmp -s "$_pfg_file" "$_pfg_tmp"; then
+      _pfg_metadata=$(stat -c '%a %u %g' "$_pfg_file" 2>/dev/null) || _pfg_rc=1
+      _pfg_context=$(stat -c '%C' "$_pfg_file" 2>/dev/null) || _pfg_context=""
+      case "$_pfg_context" in
+        *:*:*:*) ;;
+        *)
+          _pfg_context=""
+          case "$(getenforce 2>/dev/null)" in Enforcing|Permissive) _pfg_rc=1 ;; esac
+          ;;
+      esac
+      if [ "$_pfg_rc" = 0 ]; then
+        _pfg_stage=$(mktemp "${_pfg_file}.specter.XXXXXX" 2>/dev/null) || _pfg_rc=1
+      fi
+      if [ "$_pfg_rc" = 0 ]; then
+        # Stage with the original metadata; only rename a complete, verified file.
+        if cp --preserve=all "$_pfg_file" "$_pfg_stage" &&
+          cat "$_pfg_tmp" > "$_pfg_stage" &&
+          [ "$(stat -c '%a %u %g' "$_pfg_stage" 2>/dev/null)" = "$_pfg_metadata" ] &&
+          { [ -z "$_pfg_context" ] || [ "$(stat -c '%C' "$_pfg_stage" 2>/dev/null)" = "$_pfg_context" ]; } &&
+          mv -f "$_pfg_stage" "$_pfg_file"; then
+          _pfg_changed=1
+        else
+          _pfg_rc=1
+        fi
+      fi
+    fi
+  else
+    _pfg_rc=1
+  fi
+  rm -f "$_pfg_tmp"
+  [ -z "$_pfg_stage" ] || rm -f "$_pfg_stage"
+  if [ "$_pfg_rc" -ne 0 ]; then
+    log_e "PIF" "Unable to correct Pixel 10 launch API in $1"
+  else
+    if [ "$_pfg_changed" = 1 ]; then
+      log_i "PIF" "Corrected generated $_pfg_device fingerprint to launch API 36"
+      # autopif4 may already have restarted these processes before our correction.
+      if [ "$_pfg_fork" = 1 ] && [ -f "$PIF_DIR/killpi.sh" ]; then
+        sh "$PIF_DIR/killpi.sh" || log_w "PIF" "Restart Play Integrity processes before checking the corrected fingerprint"
+      fi
+    fi
+    log_w "PIF" "Pixel 10 fingerprints may require a valid RKP keybox"
+  fi
+  unset _pfg_device _pfg_fork _pfg_tmp _pfg_changed _pfg_file _pfg_stage _pfg_metadata _pfg_context
+  [ "$_pfg_rc" = 0 ] && { unset _pfg_rc; return 0; }
+  unset _pfg_rc
+  return 1
+}
+
 # $1 = product (e.g. oriole_beta), $2 = destination path
 pif_apply_github_prop() {
   _pag_product="$1"
@@ -224,6 +307,14 @@ pif_apply_device() {
           fi
           ;;
       esac
+      ;;
+  esac
+  case "$_pad_product" in
+    imported:*) ;;
+    *)
+      if [ "$_pad_applied" = 1 ]; then
+        pif_normalize_generated_first_api "$_pad_dest" "$_pad_name" || _pad_applied=0
+      fi
       ;;
   esac
   [ -n "$_pif_model" ] && log_i "PIF" "Selected Device: $_pif_model"

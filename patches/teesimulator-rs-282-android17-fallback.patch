@@ -1,0 +1,14 @@
+--- smali-original/x4/c.smali
++++ smali-patched/x4/c.smali
+@@ -2031,0 +2032,11 @@
++    sget v0, Landroid/os/Build$VERSION;->SDK_INT:I
++
++    const/16 v1, 0x25
++
++    if-ne v0, v1, :sdk_fallback_original
++
++    const v0, 0x29810
++
++    return v0
++
++    :sdk_fallback_original

@@ -29,7 +29,11 @@ _pif_apply_or_random() {
       sh "$PIF_DIR/autopif_ota.sh" 2>/dev/null || true
       _pif_out=$(sh "$PIF_DIR/autopif.sh" 2>/dev/null) || log_w "PIF" "autopif.sh failed"
     else
-      _pif_out=$(sh "$PIF_DIR/autopif4.sh" -m 2>/dev/null) || log_w "PIF" "autopif4.sh failed"
+      if _pif_out=$(sh "$PIF_DIR/autopif4.sh" -m 2>/dev/null); then
+        pif_normalize_generated_first_api "$(pif_prop_dest "$_NAME")" "$_NAME" || return 1
+      else
+        log_w "PIF" "autopif4.sh failed"
+      fi
     fi
     _pif_model=$(echo "$_pif_out" | grep '^MODEL=' | head -1 | sed 's/^MODEL=//')
     [ -n "$_pif_model" ] && log_i "PIF" "Selected Device: $_pif_model"
