@@ -22,8 +22,10 @@ def helper(name, arguments, data=None):
     return adb("shell", f"CLASSPATH={directory}/classes.dex app_process / com.dpejoh.specter.{name} {arguments}", data=data)
 
 
+created = False
 try:
     assert adb("shell", f"mkdir {directory}").returncode == 0
+    created = True
     assert adb("push", str(args.dex), f"{directory}/classes.dex").returncode == 0
     sha = "a" * 64
     release = {"name": "Release.zip", "digest": "sha256:" + sha,
@@ -57,4 +59,5 @@ try:
     assert adb("shell", f"test ! -e {directory}/payload").returncode == 0
     print("19 Android helper checks passed; installed modules unchanged.")
 finally:
-    adb("shell", f"rm -f {directory}/classes.dex {directory}/payload; rmdir {directory}")
+    if created:
+        adb("shell", f"rm -f {directory}/classes.dex {directory}/payload; rmdir {directory}")
