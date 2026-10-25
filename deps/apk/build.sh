@@ -18,12 +18,14 @@ echo "=== Compiling classes.dex using javac + d8 ==="
 BUILD_TMP=$(mktemp -d)
 mkdir -p "$BUILD_TMP/classes"
 
-javac -cp "$PLATFORM_JAR" -d "$BUILD_TMP/classes" \
+javac --release 17 -cp "$PLATFORM_JAR" -d "$BUILD_TMP/classes" \
   "$SCRIPT_DIR"/app/src/main/java/com/dpejoh/specter/Main.java \
   "$SCRIPT_DIR"/app/src/main/java/com/dpejoh/specter/XposedProbe.java \
+  "$SCRIPT_DIR"/app/src/main/java/com/dpejoh/specter/HttpsDownload.java \
+  "$SCRIPT_DIR"/app/src/main/java/com/dpejoh/specter/ReleaseAsset.java \
   "$SCRIPT_DIR"/app/src/main/java/com/dpejoh/specter/attestation/*.java
 
-"$D8" --output "$BUILD_TMP" \
+"$D8" --lib "$PLATFORM_JAR" --min-api 28 --output "$BUILD_TMP" \
   "$BUILD_TMP"/classes/com/dpejoh/specter/*.class \
   "$BUILD_TMP"/classes/com/dpejoh/specter/attestation/*.class
 

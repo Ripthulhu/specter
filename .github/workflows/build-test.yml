@@ -39,6 +39,12 @@ jobs:
       - name: Run shell tests
         run: bash tests/run.sh
 
+      - name: Test HTTPS certificate and redirect validation
+        run: python3 tests/test_https_download.py
+
+      - name: Build Android helpers
+        run: bash deps/apk/build.sh
+
       - name: Run TS tests
         run: npm test
 
@@ -76,7 +82,7 @@ jobs:
           retention-days: 28
 
       - name: Send CI build to Telegram
-        if: github.event_name != 'pull_request'
+        if: github.repository == 'dpejoh/specter' && github.event_name != 'pull_request'
         run: |
           COMMIT_MSG=$(git log -1 --pretty=%s | sed 's/`/'"'"'/g')
           COMMIT_URL="https://github.com/${{ github.repository }}/commit/${{ github.sha }}"
