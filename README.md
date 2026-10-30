@@ -39,7 +39,8 @@ Specter is a complete rewrite of what I originally built as Yurikey.
 5. Open the WebUI
 
 For Pixel 10 on Android 17, see the [tested compatibility setup](PIXEL10_ANDROID17.md)
-for the first-API correction, attestation backend requirements, and AICore setup.
+for the complete recorded integrity stack, separately installed attestation patch,
+first-API correction, and AICore setup. Specter alone is not the full setup.
 
 ## Features
 

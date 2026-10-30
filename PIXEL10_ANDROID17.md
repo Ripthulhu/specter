@@ -6,6 +6,33 @@ Device, and Strong after setup. The user then confirmed Google Wallet and
 McDonald's worked. These are observations from this configuration, rather than
 a promise that Google will continue accepting it.
 
+## What made up the working setup
+
+Specter was one part of a combined configuration. The saved pre-reset inventory
+and subsequent restore recorded the following components:
+
+| Component | Recorded version or configuration | Role |
+| --- | --- | --- |
+| KernelSU-Next | Root manager with a non-root Google Play services profile | Provides module loading; the GMS profile allows injection without granting GMS root. |
+| Zygisk Next | 1.5.2 (864) | Injects the integrity module into the relevant processes. |
+| Play Integrity Fork | v18 | Supplies the configured device fingerprint and related properties. |
+| TEESimulator-RS | 6.0.1-282 with our Android 17 fallback patch (`a17fix`) | Attestation backend; its patch is installed separately from Specter. |
+| Specter | Device inventory recorded `v1.5.0-g41b952b`; the fork later contains commit `b4cdf0d` | Coordinates integrity configuration; the later fork commit fixes generated Pixel 10 launch-API values. |
+| Key provisioning | Compatible RKP provider and private keybox | Supplies the attestation material used with this configuration. |
+
+The fork commit is part of the source repository; the recorded installed
+Specter version does not by itself establish that this later commit was installed
+on the phone. The working saved fingerprint used first API 36. Check the actual
+installed version and configuration before relying on the fork's generation fix.
+
+After the factory reset and restoration, the user again reported that the Play
+Store check passed Basic, Device, and Strong. This confirms the restored
+combination at that time, not that any one component or change alone caused the
+result. Vector 2.2 and Public Compute Services were also installed for the
+separate AICore setup described below; they are not established prerequisites
+for the integrity result. Preserve the private keybox and root profiles locally;
+they are not included in this public repository.
+
 ## Generated fingerprints
 
 Pixel 10, 10 Pro, 10 Pro XL, and 10 Pro Fold launched at API 36. Their launch API
