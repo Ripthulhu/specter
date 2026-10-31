@@ -6,13 +6,13 @@ import { openSubPage } from './subpage.js';
 const t = (key: string, fallback: string): string => getTranslation(key) || fallback;
 
 const HOURS_TO_SECONDS = 3600;
-const DEFAULT_HOURS = 24;
+const DEFAULT_HOURS = 6;
 
 export function openAutokeyboxDialog() {
   openSubPage({
     id: 'autokeybox',
     title: t('autokeybox_title', 'Auto Keybox'),
-    description: t('autokeybox_desc', 'Automatically fetches a new valid keybox at a set interval.'),
+    description: t('autokeybox_guarded_desc', 'Checks the installed keybox and replaces it only when needed and a verified replacement is available.'),
     masterToggle: {
       key: 'toggle_autokeybox',
       defaultVal: '0',
@@ -26,7 +26,7 @@ export function openAutokeyboxDialog() {
             type: 'input',
             id: 'ak-interval',
             title: t('autokeybox_interval', 'Interval (hours)'),
-            description: t('autokeybox_interval_desc', 'How often to check for new keyboxes. Default 24 hours (1 day).'),
+            description: t('autokeybox_guarded_interval_desc', 'How often to check the keybox. Default 6 hours.'),
             inputType: 'number',
             min: 1,
             unit: 'hrs',

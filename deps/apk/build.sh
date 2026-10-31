@@ -23,6 +23,7 @@ javac --release 17 -cp "$PLATFORM_JAR" -d "$BUILD_TMP/classes" \
   "$SCRIPT_DIR"/app/src/main/java/com/dpejoh/specter/XposedProbe.java \
   "$SCRIPT_DIR"/app/src/main/java/com/dpejoh/specter/HttpsDownload.java \
   "$SCRIPT_DIR"/app/src/main/java/com/dpejoh/specter/ReleaseAsset.java \
+  "$SCRIPT_DIR"/app/src/main/java/com/dpejoh/specter/KeyboxVerifier.java \
   "$SCRIPT_DIR"/app/src/main/java/com/dpejoh/specter/attestation/*.java
 
 "$D8" --lib "$PLATFORM_JAR" --min-api 28 --output "$BUILD_TMP" \

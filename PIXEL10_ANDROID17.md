@@ -141,3 +141,27 @@ had no Play Store update option; the Netherlands is absent from
 [Google's supported-country list](https://support.google.com/pixelphone/answer/15312581?hl=en).
 Those features were not validated, and this setup does not establish Pixel 7 Pro
 model support.
+
+## Automatic keybox checks
+
+Specter's **Auto Keybox** option is off by default. When enabled, it checks every
+six hours by default and searches for a replacement if the installed certificate
+is revoked, invalid, or within 72 hours of expiry. A replacement must be present
+in the catalog, pass certificate-chain and private-key checks against Google's
+current attestation roots and revocation list, preserve the installed key
+algorithms and provisioning-extension capability, and expire at least 48 hours
+in the future. If the current keybox is still valid, its replacement must also
+expire at least 24 hours later. The previous keybox is kept in
+`/data/adb/specter/keybox-auto-backup/keybox.xml`.
+
+Automatic replacement currently supports the Tricky Store / TEESimulator-RS
+backend. It leaves private, unrecognized, and custom keyboxes alone. If a
+replacement, catalog, or verification data is unavailable, the existing keybox
+is kept and Specter tries again at the next interval. It posts a notification
+after replacement or when attention is needed.
+
+These checks cannot establish that Google Play or a particular app will accept
+a shared keybox: a key may be revoked at any time or fail an app-specific
+integrity check. After a change, check Play Store's integrity result and Wallet.
+If it fails, restore the saved keybox with root-only permissions or choose
+another verified keybox; do not clear Wallet data as a routine step.

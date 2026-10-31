@@ -68,7 +68,7 @@ while true; do
                     auto_target:auto_target.sh:300:toggle_auto_target \
                     hma:hma.sh:21600:toggle_auto_hma \
                     autopif:pif.sh:86400:toggle_autopif \
-                    autokeybox:keybox.sh:86400:toggle_autokeybox; do
+                    autokeybox:keybox_auto.sh:21600:toggle_autokeybox; do
     _name="${_task_line%%:*}"
     _rest="${_task_line#*:}"
     _script="${_rest%%:*}"

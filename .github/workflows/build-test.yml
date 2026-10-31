@@ -42,6 +42,12 @@ jobs:
       - name: Test HTTPS certificate and redirect validation
         run: python3 tests/test_https_download.py
 
+      - name: Test keybox certificate validation
+        run: |
+          python3 -m pip install cryptography
+          curl -fsSL https://repo.maven.apache.org/maven2/org/json/json/20240303/json-20240303.jar -o "$RUNNER_TEMP/specter-json.jar"
+          SPECTER_JSON_JAR="$RUNNER_TEMP/specter-json.jar" python3 tests/test_keybox_verifier.py
+
       - name: Build Android helpers
         run: bash deps/apk/build.sh
 

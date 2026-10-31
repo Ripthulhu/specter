@@ -3,7 +3,7 @@
 
 decode_keybox_blob() {
   _dkb_in="$1" _dkb_out="$2"
-  _dkb_tmp="/data/local/tmp/_dkb_$$.tmp"
+  _dkb_tmp="${SPECTER_TMP_DIR:-/data/local/tmp}/_dkb_$$.tmp"
   decode_substitution "$_dkb_in" "$_dkb_tmp" 2>/dev/null || { rm -f "$_dkb_tmp"; return 1; }
   base64 -d < "$_dkb_tmp" > "$_dkb_out" 2>/dev/null || { rm -f "$_dkb_tmp"; return 1; }
   rm -f "$_dkb_tmp"

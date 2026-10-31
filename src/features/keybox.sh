@@ -14,6 +14,12 @@ case "${1:-}" in --if-needed) _if_needed=1 ;; esac
 detect_keystore_manager
 ksm_available || die "No keystore manager (Tricky Store / TEESimulator / OhMyKeymint) data directory found"
 
+if command -v flock >/dev/null 2>&1; then
+  ensure_dir "$SPECTER_DIR"
+  exec 0<>"$SPECTER_DIR/keybox-update.lock"
+  flock -n 0 || die "Another keybox update is running"
+fi
+
 DECODE_FILE="/data/local/tmp/keybox_decode.$$"
 TEMP_FILE="/data/local/tmp/keybox.tmp.$$"
 trap 'rm -f "$DECODE_FILE" "$TEMP_FILE" 2>/dev/null' EXIT
