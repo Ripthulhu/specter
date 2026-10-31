@@ -91,8 +91,10 @@ _out=$(run_feature keybox_auto.sh)
 assert_contains "custom keybox is left alone" "$_out" "Custom keybox left unchanged"
 set_cfg keybox_custom_type ''
 
+mkdir -p "$SPECTER_DIR/cache"
+printf '%s' '{"entries":[]}' > "$SPECTER_DIR/cache/keybox_catalog.json"
 _out=$(run_feature keybox_auto.sh)
-assert_contains "verified replacement installed" "$_out" "Installed a verified replacement"
+assert_contains "uses fresh catalog rather than shared cache" "$_out" "Installed a verified replacement"
 assert_eq "replacement is active" "replacement" "$(cat "$KSM_KEYBOX")"
 assert_eq "previous keybox backed up" "original" "$(cat "$SPECTER_DIR/keybox-auto-backup/keybox.xml")"
 

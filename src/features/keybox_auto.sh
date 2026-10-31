@@ -19,6 +19,8 @@ exec 0<>"$SPECTER_DIR/keybox-update.lock"
 flock -n 0 || { log_i "AUTO_KEYBOX" "Another keybox update is running"; exit 0; }
 
 _dir=$(mktemp -d "$SPECTER_DIR/keybox-auto.XXXXXXXX") || exit 1
+SPECTER_TMP_DIR="$_dir"
+export SPECTER_TMP_DIR
 _adjacent="$(dirname "$KSM_KEYBOX")/.specter-keybox.$$"
 trap 'rm -f "$_adjacent"; rm -rf "$_dir"' EXIT
 trap 'exit 1' HUP INT TERM
@@ -48,7 +50,8 @@ if [ "$_current_ok" = 1 ] && [ "$_expiry" -gt $((_now + 259200)) ]; then
   exit 0
 fi
 
-_history=$(keybox_catalog) || _network_failure
+download "$CATALOG_URL" "$_dir/catalog.json" || _network_failure
+_history=$(cat "$_dir/catalog.json")
 _serial=$(_verify serial "$_dir/original") || exit 1
 _current_rkp=$(_verify rkp "$_dir/original") || exit 1
 _current_algorithms=$(_verify algorithms "$_dir/original") || exit 1
