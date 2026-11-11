@@ -1,14 +1,8 @@
-import '@material/web/iconbutton/icon-button.js';
-import '@material/web/icon/icon.js';
-import '@material/web/labs/segmentedbuttonset/outlined-segmented-button-set.js';
-import '@material/web/labs/segmentedbutton/outlined-segmented-button.js';
-import { openSubPage } from './subpage.js';
 import { showToast } from './toast.js';
-import { getTranslation } from './i18n.js';
+import { t } from './i18n.js';
 import { exec, getDataDir } from './bridge.js';
-import { shellEscape } from './utils.js';
+import { afterPaint, shellEscape, wireRowActivation } from './utils.js';
 
-const t = (key: string, fallback: string): string => getTranslation(key) || fallback;
 
 export interface LogEntry {
   content: string;
@@ -80,11 +74,15 @@ async function fetchEntriesForTab(tab: LogTab): Promise<LogEntry[]> {
   return [...liveHistory];
 }
 
+let renderSeq = 0;
+
 async function renderCurrentLog() {
   if (!activeViewportEl) return;
+  const seq = ++renderSeq;
   activeViewportEl.innerHTML = '';
 
   const entries = await fetchEntriesForTab(currentLogType);
+  if (seq !== renderSeq || !activeViewportEl) return;
   if (entries.length === 0) {
     if (activeEmptyEl) activeEmptyEl.style.display = 'flex';
   } else {
@@ -121,13 +119,22 @@ export async function clearCurrentLog() {
 export async function openLogsSubPage() {
   currentLogType = 'action';
 
+  // The logs UI is only reachable from Settings; load its components on demand.
+  const [{ openSubPage }] = await Promise.all([
+    import('./subpage.js'),
+    import('@material/web/iconbutton/icon-button.js'),
+    import('@material/web/icon/icon.js'),
+    import('@material/web/labs/segmentedbuttonset/outlined-segmented-button-set.js'),
+    import('@material/web/labs/segmentedbutton/outlined-segmented-button.js'),
+  ]);
+
   await openSubPage({
     id: 'logs',
     title: t('terminal_title', 'Logs'),
     description: t('settings_logs_desc', 'View terminal output and execution logs'),
     headerAction: (container) => {
       container.innerHTML = `
-        <md-icon-button id="logs-refresh-btn" aria-label="${t('btn_refresh', 'Refresh')}">
+        <md-icon-button id="logs-refresh-btn" aria-label="${t('common_refresh', 'Refresh')}">
           <md-icon aria-hidden="true">refresh</md-icon>
         </md-icon-button>
         <md-icon-button id="logs-copy-btn" aria-label="${t('terminal_copy', 'Copy')}">
@@ -199,7 +206,10 @@ export async function openLogsSubPage() {
                 });
               });
 
-              renderCurrentLog().catch(console.error);
+              // Start the first log read only after the page has painted.
+              afterPaint(() => {
+                renderCurrentLog().catch(console.error);
+              }, 300);
             }
           }
         ]
@@ -215,14 +225,6 @@ export async function openLogsSubPage() {
 export function initTerminal() {
   const row = document.getElementById('row-logs');
   if (row) {
-    row.addEventListener('click', () => {
-      openLogsSubPage().catch(console.error);
-    });
-    row.addEventListener('keydown', (e: KeyboardEvent) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        openLogsSubPage().catch(console.error);
-      }
-    });
+    wireRowActivation(row, () => { openLogsSubPage().catch(console.error); });
   }
 }

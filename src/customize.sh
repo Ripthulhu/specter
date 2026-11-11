@@ -3,9 +3,6 @@
 MODDIR="$MODPATH"
 . "$MODPATH/lib/common.sh"
 
-# Clean up old uppercase paths (module id + data dir)
-rm -rf /data/adb/modules/Specter /data/adb/Specter
-
 ui_print ""
 ui_print " ____                  _            "
 ui_print "/ ___| _ __   ___  ___| |_ ___ _ __ "
@@ -27,7 +24,7 @@ else
   ui_print "- Zygisk: none"
 fi
 
-# Tricky Store / TEESimulator-RS (id=tricky_store)
+# Tricky Store / Tricky Store OSS (id=tricky_store)
 _ts_name=$(_ts_prop)
 if [ -n "$_ts_name" ]; then
   ui_print "- $_ts_name"
@@ -70,14 +67,14 @@ done
 if ! module_enabled teesim >/dev/null \
   && ! module_enabled tricky_store >/dev/null \
   && ! module_enabled "${OMK_MODULE##*/}" >/dev/null; then
-  ui_print "- Installing TEESimulator-RS.."
-  if install_module_from_github "Enginex0/TEESimulator-RS" "TEESimulator-RS"; then
-    ui_print "- TEESimulator-RS installed"
+  ui_print "- Installing Tricky Store OSS.."
+  if install_module_from_github "beakthoven/TrickyStoreOSS" "Tricky Store OSS"; then
+    ui_print "- Tricky Store OSS installed"
   else
-    ui_print "- TEESimulator-RS not available"
+    ui_print "- Tricky Store OSS not available"
   fi
 else
-  ui_print "- Keystore backend present, skipping TEESimulator-RS"
+  ui_print "- Keystore backend present, skipping Tricky Store OSS"
 fi
 unset _ts_name _teesim_name _omk_name
 
@@ -97,32 +94,17 @@ unset _pif_name
 mkdir -p "$SPECTER_DIR/backup"
 
 # Bundled inotifyd — install the right arch, clean up the rest
-_arch=$(uname -m)
-case "$_arch" in
-  aarch64) _src="inotifyd64" ;;
-  armv7l)  _src="inotifyd32" ;;
-  x86_64)  _src="inotifyd_x86_64" ;;
-  i686)    _src="inotifyd_x86" ;;
-esac
-if [ -n "$_src" ] && [ -f "$MODPATH/deps/$_src" ]; then
-  mv "$MODPATH/deps/$_src" "$MODPATH/deps/inotifyd"
-  set_perm "$MODPATH/deps/inotifyd" 0 0 0755
-fi
-for _f in inotifyd64 inotifyd32 inotifyd_x86_64 inotifyd_x86; do
-  [ -f "$MODPATH/deps/$_f" ] && rm -f "$MODPATH/deps/$_f"
-done
+install_inotifyd "$MODPATH"
 [ -f "$MODPATH/deps/classes.dex" ] && set_perm "$MODPATH/deps/classes.dex" 0 0 0644
 unset _arch _src _f
 
 # Copy shipped config files to data dir
 mkdir -p "$SPECTER_DIR/config"
 cp "$MODPATH/config/conflicts.txt" "$SPECTER_DIR/config/conflicts.txt" 2>/dev/null || true
-# Hide list is user-editable; never overwrite an existing copy.
-[ -f "$SPECTER_DIR/config/hma-hide-list.txt" ] || \
-  cp "$MODPATH/config/hma-hide-list.txt" "$SPECTER_DIR/config/hma-hide-list.txt" 2>/dev/null || true
 
-# Hot install — ksu-only, update-already-present: move staging into the
-# live dir and re-apply without a reboot. no-op on apatch/magisk/first install.
+# Hot install — updates only: apply the staged update live, without a
+# reboot. The per-manager rules live in lib/hotinstall.sh; no-op when
+# its gate refuses (first install, mounted payload, disabled module).
 . "$MODPATH/lib/hotinstall.sh"
 specter_hot_install
 

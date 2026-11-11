@@ -125,7 +125,7 @@ function createChildProcess(): ChildProcess {
   };
 }
 
-export function spawnScript(scriptName: string, type = 'feature'): ChildProcess {
+export function spawnScript(scriptName: string, type = 'feature', args: string[] = []): ChildProcess {
   const child = createChildProcess();
   if (!window.ksu?.exec) { setTimeout(() => (child as any).emit('error', new BridgeError('NO_BRIDGE', 'no-bridge'))); return child; }
   if (!MODULE) { setTimeout(() => (child as any).emit('error', new BridgeError('NO_MODULE', 'no-module-path'))); return child; }
@@ -136,13 +136,18 @@ export function spawnScript(scriptName: string, type = 'feature'): ChildProcess 
     const globalName = genCallbackName();
     setGlobal(globalName, child);
     const cleanup = () => deleteGlobal(globalName);
-    const timer = setTimeout(cleanup, EXEC_TIMEOUT_MS);
+    const timer = setTimeout(() => {
+      // A hung spawn must reject the child promise; otherwise runAction's
+      // progress dialog can stay open forever with no way to dismiss it.
+      cleanup();
+      (child as any).emit('error', new TimeoutError());
+    }, EXEC_TIMEOUT_MS);
     (child as any).on('exit', () => { clearTimeout(timer); cleanup(); });
     (child as any).on('error', () => { clearTimeout(timer); cleanup(); });
-    try { window.ksu.spawn('sh', JSON.stringify([scriptPath]), '{}', globalName); }
+    try { window.ksu.spawn('sh', JSON.stringify([scriptPath, ...args]), '{}', globalName); }
     catch (e) { clearTimeout(timer); cleanup(); setTimeout(() => (child as any).emit('error', e)); }
   } else {
-    const cmd = `sh ${shellEscape(scriptPath)}`;
+    const cmd = `sh ${shellEscape(scriptPath)}${args.length ? ' ' + args.map(shellEscape).join(' ') : ''}`;
     let timedOut = false;
     const t = setTimeout(() => { timedOut = true; (child as any).emit('error', new TimeoutError()); }, EXEC_TIMEOUT_MS);
     exec(cmd).then(({ code, stdout, stderr }) => {
@@ -154,4 +159,52 @@ export function spawnScript(scriptName: string, type = 'feature'): ChildProcess 
     }).catch(e => { if (!timedOut) { clearTimeout(t); (child as any).emit('error', e); } });
   }
   return child;
+}
+
+export function spawnCommand(command: string): Promise<ExecResult> {
+  const spawn = window.ksu?.spawn;
+  if (typeof spawn !== 'function') {
+    return exec(command);
+  }
+
+  return new Promise((resolve, reject) => {
+    const child = createChildProcess();
+    const globalName = genCallbackName();
+    setGlobal(globalName, child);
+    const stdoutParts: string[] = [];
+    const stderrParts: string[] = [];
+
+    child.stdout.on('data', (data: string) => stdoutParts.push(data));
+    child.stderr.on('data', (data: string) => stderrParts.push(data));
+
+    const cleanup = () => deleteGlobal(globalName);
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new TimeoutError());
+    }, EXEC_TIMEOUT_MS);
+
+    child.on('exit', (code: number) => {
+      clearTimeout(timer);
+      cleanup();
+      resolve({
+        code: typeof code === 'number' ? code : 0,
+        stdout: stdoutParts.join('\n'),
+        stderr: stderrParts.join('\n'),
+      });
+    });
+
+    child.on('error', (e: unknown) => {
+      clearTimeout(timer);
+      cleanup();
+      reject(e);
+    });
+
+    try {
+      spawn.call(window.ksu, command, '[]', '{}', globalName);
+    } catch (e) {
+      clearTimeout(timer);
+      cleanup();
+      reject(e);
+    }
+  });
 }

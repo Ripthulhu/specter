@@ -12,19 +12,16 @@ import type { MdMenu } from '@material/web/menu/menu.js';
 import '@material/web/textfield/outlined-text-field.js';
 import type { MdOutlinedTextField } from '@material/web/textfield/outlined-text-field.js';
 import '@material/web/fab/fab.js';
-import '@material/web/progress/circular-progress.js';
 import { exec, getDataDir } from './bridge.js';
 import { cfgGet, cfgSet } from './cfg.js';
 import { openFileBrowser } from './file-browser.js';
 import { showConfirm } from './dialog.js';
-import { showToast } from './toast.js';
-import { escapeHtml, shellEscape, updateListContainerCorners } from './utils.js';
-import { getTranslation } from './i18n.js';
+import { showToast, showLoadingToast, updateToast } from './toast.js';
+import { afterPaint, escapeHtml, shellEscape } from './utils.js';
+import { t, tf } from './i18n.js';
+import { refreshPifChooseDesc as refreshChooseDesc } from './pif-choose-desc.js';
 import { openSubPage } from './subpage.js';
-
-const t = (key: string, fallback: string): string => getTranslation(key) || fallback;
-const tf = (key: string, fallback: string, value: string): string =>
-  t(key, fallback).replaceAll('{0}', value);
+import { closeMenu, wireMenuTrigger } from './menu-utils.js';
 
 const IMPORTED_PREFIX = 'imported:';
 
@@ -36,6 +33,17 @@ const pifBotUrls = (path: string): string[] => [
   `https://gh.sevencdn.com/https://raw.githubusercontent.com/${PIF_REPO}/${path}`,
 ];
 const DEVICE_LIST_URLS = pifBotUrls('bot/device_list.json');
+
+/** Resolve after two frames, once the disabled FAB and toast have painted. */
+function afterNextPaint(): Promise<void> {
+  return new Promise(resolve => {
+    if (typeof requestAnimationFrame !== 'function') {
+      resolve();
+      return;
+    }
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+}
 
 const FALLBACK_CANARY_DEVICES: PifDevice[] = [
   { model: 'Pixel 6', product: 'oriole_beta' },
@@ -155,47 +163,23 @@ async function loadImported(): Promise<PifDevice[]> {
   return out;
 }
 
-export async function refreshChooseDesc() {
-  const desc = document.getElementById('pif-choose-device-desc');
-  if (!desc) return;
-  const [preferred, blacklist] = await Promise.all([loadPreferred(), loadBlacklist()]);
-  if (preferred.length === 1) {
-    const label = preferred[0]?.model || preferred[0]?.product || '';
-    desc.textContent = t('menu_pif_choose_current', 'Current: {0}').replace('{0}', label);
-    return;
-  }
-  if (preferred.length > 1) {
-    desc.textContent = t('menu_pif_choose_current_many', 'Current: {0} devices').replace(
-      '{0}',
-      String(preferred.length)
-    );
-    return;
-  }
-  if (blacklist.size > 0) {
-    desc.textContent = tf(
-      'menu_pif_random_blacklisted',
-      'Random Canary ({0} blacklisted)',
-      String(blacklist.size)
-    );
-    return;
-  }
-  desc.textContent = t('menu_pif_choose_desc', 'Pick which Pixel Canary models Specter may fetch');
-}
-
 export async function openPifDeviceSubpage() {
-  const [saved, initialImported, initialCanary, initialBlacklist] = await Promise.all([
-    loadPreferred(),
-    loadImported(),
-    ensureCanaryList(),
-    loadBlacklist(),
-  ]);
-
-  let selectedProduct = saved[0]?.product || '';
-  let blacklist = new Set(initialBlacklist);
+  // The page opens immediately on the built-in fallback device list; the
+  // saved selection, the imported devices, the blacklist, and the live
+  // canary list (a network fetch) load after it is up and re-render the
+  // list. Awaiting them first used to freeze the tap, worst on a slow
+  // network. State the user changes before the load lands is kept.
+  let selectedProduct = '';
+  let selectedModel = '';
+  let blacklist = new Set<string>();
   let mode: 'target' | 'blacklist' = 'target';
-  let imported = initialImported;
-  let canary = initialCanary;
+  let imported: PifDevice[] = [];
+  let canary: PifDevice[] = FALLBACK_CANARY_DEVICES;
   let searchQuery = '';
+  // Target selection and blacklist edits are independent: picking a device
+  // must not cause the loaded blacklist to be discarded.
+  let targetInteracted = false;
+  let blacklistInteracted = false;
 
   let listHostRef: HTMLElement | null = null;
   let searchFieldRef: MdOutlinedTextField | null = null;
@@ -225,17 +209,24 @@ export async function openPifDeviceSubpage() {
     } else {
       const all = getAllDevices();
       const chosen = all.find(d => d.product === selectedProduct);
-      if (chosen) {
-        await cfgSet('pif_preferred_devices', encodePreferred([chosen]));
-        await cfgSet('pif_preferred_product', '');
-        await cfgSet('pif_preferred_model', '');
-      }
+      // The chosen device may have come from the fallback list before the
+      // live list replaced it. Persist its product anyway, using the model
+      // remembered at selection time, instead of silently leaving the old
+      // preference in place.
+      const model = chosen?.model || selectedModel || selectedProduct;
+      await cfgSet('pif_preferred_devices', encodePreferred([{ model, product: selectedProduct }]));
+      await cfgSet('pif_preferred_product', '');
+      await cfgSet('pif_preferred_model', '');
     }
     void refreshChooseDesc();
   };
 
-  const selectProduct = (prod: string) => {
+  const selectProduct = (prod: string, model?: string) => {
+    targetInteracted = true;
     selectedProduct = prod;
+    selectedModel = prod
+      ? (model ?? getAllDevices().find(d => d.product === prod)?.model ?? '')
+      : '';
     if (!listHostRef) return;
     listHostRef.querySelectorAll<MdRadio>('md-radio[name="pif-device"]').forEach(r => {
       r.checked = r.value === selectedProduct;
@@ -249,6 +240,7 @@ export async function openPifDeviceSubpage() {
   };
 
   const toggleBlacklistDevice = (prod: string) => {
+    blacklistInteracted = true;
     if (blacklist.has(prod)) {
       blacklist.delete(prod);
     } else {
@@ -260,6 +252,7 @@ export async function openPifDeviceSubpage() {
 
   const clearAllBlacklist = () => {
     if (blacklist.size === 0) return;
+    blacklistInteracted = true;
     blacklist.clear();
     updateHeaderFn?.();
     renderLists();
@@ -300,32 +293,20 @@ export async function openPifDeviceSubpage() {
           : '';
         html += `
           <h2 class="list-title">${escapeHtml(defaultLabel)}</h2>
-          <div class="list-container">
-            <div class="list-item list-item--only pif-device-row" data-product="" role="button" tabindex="0">
-              <md-radio name="pif-device" value="" ${isChecked ? 'checked' : ''} aria-label="${escapeHtml(randomLabel)}"></md-radio>
-              <div class="list-item-content">
-                <div class="toggle-text">${escapeHtml(randomLabel)}</div>
-                <span class="supporting-text">${escapeHtml(t('menu_pif_random_desc', 'Randomly emulate any Pixel Canary model') + blNotice)}</span>
-              </div>
-              <md-ripple></md-ripple>
-            </div>
-          </div>
+          <sp-settings-section>
+            <sp-settings-row class="pif-device-row" data-product="" variant="navigation">
+              <md-radio slot="leading" name="pif-device" value="" ${isChecked ? 'checked' : ''} aria-label="${escapeHtml(randomLabel)}"></md-radio>
+              <span slot="headline">${escapeHtml(randomLabel)}</span>
+              <span slot="supporting">${escapeHtml(t('menu_pif_random_desc', 'Randomly emulate any Pixel Canary model') + blNotice)}</span>
+            </sp-settings-row>
+          </sp-settings-section>
         `;
       }
 
       const renderGroup = (title: string, list: PifDevice[]) => {
         if (list.length === 0) return '';
         const itemsHtml = list
-          .map((d, i) => {
-            const total = list.length;
-            const posClass =
-              total === 1
-                ? 'list-item--only'
-                : i === 0
-                ? 'list-item--first'
-                : i === total - 1
-                ? 'list-item--last'
-                : 'list-item--middle';
+          .map(d => {
             const isChecked = selectedProduct === d.product;
             const isGreyedOut = selectedProduct === '' && blacklist.has(d.product);
             const greyClass = isGreyedOut ? ' pif-device-row--blacklisted' : '';
@@ -333,32 +314,29 @@ export async function openPifDeviceSubpage() {
               ? t('menu_pif_choose_imported', 'Imported')
               : d.product;
             const trash = d.imported
-              ? `<md-icon-button class="pif-dev-trash" data-id="${escapeHtml(
+              ? `<md-icon-button slot="trailing" class="pif-dev-trash" data-id="${escapeHtml(
                   d.product.slice(IMPORTED_PREFIX.length)
-                )}" aria-label="${t('menu_pif_choose_delete', 'Remove imported device')}">
+                )}" aria-label="${escapeHtml(t('menu_pif_choose_delete', 'Remove imported device'))}">
                   <md-icon aria-hidden="true">delete</md-icon>
                 </md-icon-button>`
               : '';
 
             return `
-              <div class="list-item ${posClass} pif-device-row${greyClass}" data-product="${escapeHtml(d.product)}" role="button" tabindex="0">
-                <md-radio name="pif-device" value="${escapeHtml(d.product)}" ${isChecked ? 'checked' : ''} aria-label="${escapeHtml(d.model)}"></md-radio>
-                <div class="list-item-content">
-                  <div class="toggle-text">${escapeHtml(d.model)}</div>
-                  <span class="supporting-text">${escapeHtml(subText)}</span>
-                </div>
+              <sp-settings-row class="pif-device-row${greyClass}" data-product="${escapeHtml(d.product)}" variant="navigation">
+                <md-radio slot="leading" name="pif-device" value="${escapeHtml(d.product)}" ${isChecked ? 'checked' : ''} aria-label="${escapeHtml(d.model)}"></md-radio>
+                <span slot="headline">${escapeHtml(d.model)}</span>
+                <span slot="supporting">${escapeHtml(subText)}</span>
                 ${trash}
-                <md-ripple></md-ripple>
-              </div>
+              </sp-settings-row>
             `;
           })
           .join('');
 
         return `
           <h2 class="list-title">${escapeHtml(title)} (${list.length})</h2>
-          <div class="list-container">
+          <sp-settings-section>
             ${itemsHtml}
-          </div>
+          </sp-settings-section>
         `;
       };
 
@@ -370,7 +348,6 @@ export async function openPifDeviceSubpage() {
       }
 
       listHostRef.innerHTML = html;
-      updateListContainerCorners();
 
       // Wire clicks on target rows
       listHostRef.querySelectorAll<HTMLElement>('.pif-device-row').forEach(row => {
@@ -388,13 +365,7 @@ export async function openPifDeviceSubpage() {
           void selectProduct(product);
         };
 
-        row.addEventListener('click', handleTrigger);
-        row.addEventListener('keydown', (ev: KeyboardEvent) => {
-          if (ev.key === 'Enter' || ev.key === ' ') {
-            ev.preventDefault();
-            handleTrigger(ev);
-          }
-        });
+        row.addEventListener('sp-activate', handleTrigger);
       });
 
       // Wire trash buttons
@@ -405,18 +376,22 @@ export async function openPifDeviceSubpage() {
           const id = btn.dataset.id;
           if (!id) return;
           const ok = await showConfirm(
-            t('dialog_confirm', 'Confirm'),
-            t('menu_pif_choose_delete', 'Remove imported device') + '?'
+            t('menu_pif_choose_delete', 'Remove imported device'),
+            t('menu_pif_choose_delete', 'Remove imported device') + '?',
+            { variant: 'danger' }
           );
           if (!ok) return;
 
+          targetInteracted = true;
           const product = IMPORTED_PREFIX + id;
           const path = `${importedDir()}/${id}.prop`;
           await exec(`rm -f ${shellEscape(path)} 2>/dev/null || true`);
           if (selectedProduct === product) {
             selectedProduct = '';
+            selectedModel = '';
           }
           if (blacklist.has(product)) {
+            blacklistInteracted = true;
             blacklist.delete(product);
             await saveBlacklist(blacklist, getAllDevices());
           }
@@ -449,16 +424,7 @@ export async function openPifDeviceSubpage() {
       const renderBlacklistGroup = (title: string, list: PifDevice[]) => {
         if (list.length === 0) return '';
         const itemsHtml = list
-          .map((d, i) => {
-            const total = list.length;
-            const posClass =
-              total === 1
-                ? 'list-item--only'
-                : i === 0
-                ? 'list-item--first'
-                : i === total - 1
-                ? 'list-item--last'
-                : 'list-item--middle';
+          .map(d => {
             const isBlacklisted = blacklist.has(d.product);
             const subText = d.imported
               ? t('menu_pif_choose_imported', 'Imported')
@@ -466,23 +432,20 @@ export async function openPifDeviceSubpage() {
             const excludedClass = isBlacklisted ? ' pif-blacklist-row--excluded' : '';
 
             return `
-              <div class="list-item ${posClass} pif-blacklist-row${excludedClass}" data-product="${escapeHtml(d.product)}" role="button" tabindex="0">
-                <md-checkbox touch-target="wrapper" data-product="${escapeHtml(d.product)}" ${isBlacklisted ? 'checked' : ''} aria-label="${escapeHtml(d.model)}"></md-checkbox>
-                <div class="list-item-content">
-                  <div class="toggle-text">${escapeHtml(d.model)}</div>
-                  <span class="supporting-text">${escapeHtml(subText)}</span>
-                </div>
-                <md-ripple></md-ripple>
-              </div>
+              <sp-settings-row class="pif-blacklist-row${excludedClass}" data-product="${escapeHtml(d.product)}" variant="navigation">
+                <md-checkbox slot="leading" touch-target="wrapper" data-product="${escapeHtml(d.product)}" ${isBlacklisted ? 'checked' : ''} aria-label="${escapeHtml(d.model)}"></md-checkbox>
+                <span slot="headline">${escapeHtml(d.model)}</span>
+                <span slot="supporting">${escapeHtml(subText)}</span>
+              </sp-settings-row>
             `;
           })
           .join('');
 
         return `
           <h2 class="list-title">${escapeHtml(title)}</h2>
-          <div class="list-container">
+          <sp-settings-section>
             ${itemsHtml}
-          </div>
+          </sp-settings-section>
         `;
       };
 
@@ -497,7 +460,6 @@ export async function openPifDeviceSubpage() {
       }
 
       listHostRef.innerHTML = html;
-      updateListContainerCorners();
 
       // Wire checkbox & row toggles
       listHostRef.querySelectorAll<HTMLElement>('.pif-blacklist-row').forEach(row => {
@@ -515,13 +477,7 @@ export async function openPifDeviceSubpage() {
           void toggleBlacklistDevice(product);
         };
 
-        row.addEventListener('click', handleTrigger);
-        row.addEventListener('keydown', (ev: KeyboardEvent) => {
-          if (ev.key === 'Enter' || ev.key === ' ') {
-            ev.preventDefault();
-            handleTrigger(ev);
-          }
-        });
+        row.addEventListener('sp-activate', handleTrigger);
       });
     }
   };
@@ -557,7 +513,9 @@ export async function openPifDeviceSubpage() {
     }
 
     const product = IMPORTED_PREFIX + id;
+    targetInteracted = true;
     selectedProduct = product;
+    selectedModel = model;
     imported = imported.filter(d => d.product !== product);
     imported.unshift({ model, product, imported: true });
     renderLists();
@@ -568,13 +526,13 @@ export async function openPifDeviceSubpage() {
     });
   };
 
-  await openSubPage({
+  const pageInstance = await openSubPage({
     id: 'pif-devices',
     title: t('menu_pif_choose', 'Choose PIF Device'),
     description: t('menu_pif_choose_desc', 'Pick which Pixel Canary models Specter may fetch'),
     headerAction: (container, instance) => {
       container.innerHTML = `
-        <div style="position: relative; display: flex; align-items: center;">
+        <div class="pif-menu-wrap">
           <button type="button" class="subpage-action-btn" id="pif-menu-btn" aria-label="${t('ta_menu_more', 'More options')}">
             <md-icon aria-hidden="true">more_vert</md-icon>
             <md-ripple></md-ripple>
@@ -599,13 +557,10 @@ export async function openPifDeviceSubpage() {
       const menuBtn = container.querySelector('#pif-menu-btn') as HTMLElement;
       const menu = container.querySelector('#pif-menu') as MdMenu;
 
-      menuBtn?.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (menu) menu.open = !menu.open;
-      });
+      wireMenuTrigger(menuBtn, menu);
 
       container.querySelector('#pif-menu-import')?.addEventListener('click', () => {
-        if (menu) menu.open = false;
+        closeMenu(menu);
         openFileBrowser(
           path => {
             void importFile(path);
@@ -642,14 +597,14 @@ export async function openPifDeviceSubpage() {
       };
 
       container.querySelector('#pif-menu-mode')?.addEventListener('click', () => {
-        if (menu) menu.open = false;
+        closeMenu(menu);
         mode = mode === 'target' ? 'blacklist' : 'target';
         updateHeaderFn?.();
         renderLists();
       });
 
       container.querySelector('#pif-menu-reset')?.addEventListener('click', () => {
-        if (menu) menu.open = false;
+        closeMenu(menu);
         if (mode === 'target') {
           selectProduct('');
           renderLists();
@@ -672,7 +627,7 @@ export async function openPifDeviceSubpage() {
     },
     fab: container => {
       container.innerHTML = `
-        <md-fab id="pif-apply" class="subpage-fab" label="${t('dialog_apply', 'Apply')}">
+        <md-fab id="pif-apply" class="subpage-fab" disabled label="${t('dialog_apply', 'Apply')}">
           <md-icon slot="icon" aria-hidden="true">check</md-icon>
         </md-fab>
       `;
@@ -681,6 +636,8 @@ export async function openPifDeviceSubpage() {
       applyBtn?.addEventListener('click', async () => {
         if (applyBtn.disabled) return;
         applyBtn.disabled = true;
+        const loadingToast = showLoadingToast(t('common_loading', 'Loading...'));
+        await afterNextPaint();
         try {
           await Promise.all([
             persistTarget(),
@@ -691,7 +648,8 @@ export async function openPifDeviceSubpage() {
           renderLists();
 
           if (mode === 'blacklist') {
-            showToast(
+            updateToast(
+              loadingToast,
               blacklist.size > 0
                 ? tf('menu_pif_blacklist_saved_count', 'Blacklist saved ({0} excluded)', String(blacklist.size))
                 : t('menu_pif_blacklist_saved_all', 'Blacklist saved (all allowed)'),
@@ -700,15 +658,17 @@ export async function openPifDeviceSubpage() {
           } else {
             const all = getAllDevices();
             const chosen = all.find(d => d.product === selectedProduct);
-            const label = chosen?.model || t('menu_pif_random', 'Random Canary (Default)');
-            showToast(tf('menu_pif_applied', '{0} applied', label), {
+            const label = selectedProduct
+              ? (chosen?.model || selectedModel || selectedProduct)
+              : t('menu_pif_random', 'Random Canary (Default)');
+            updateToast(loadingToast, tf('menu_pif_applied', '{0} applied', label), {
               icon: 'check_circle',
               type: 'success',
               autoCloseDelay: 2000,
             });
           }
         } catch (e) {
-          showToast(tf('menu_pif_apply_failed', 'Failed to apply: {0}', String(e)), {
+          updateToast(loadingToast, tf('menu_pif_apply_failed', 'Failed to apply: {0}', String(e)), {
             icon: 'error',
             type: 'error',
             autoCloseDelay: 2500,
@@ -734,7 +694,7 @@ export async function openPifDeviceSubpage() {
                     aria-label="${t('menu_pif_search', 'Search devices...')}"
                   >
                     <md-icon slot="leading-icon" aria-hidden="true">search</md-icon>
-                    <md-icon-button slot="trailing-icon" id="pif-search-clear" style="display:none;" aria-label="${escapeHtml(t('menu_pif_search_clear', 'Clear search'))}">
+                    <md-icon-button slot="trailing-icon" id="pif-search-clear" hidden aria-label="${escapeHtml(t('menu_pif_search_clear', 'Clear search'))}">
                       <md-icon aria-hidden="true">close</md-icon>
                     </md-icon-button>
                   </md-outlined-text-field>
@@ -749,7 +709,7 @@ export async function openPifDeviceSubpage() {
               searchFieldRef?.addEventListener('input', () => {
                 searchQuery = searchFieldRef?.value || '';
                 if (clearBtnRef) {
-                  clearBtnRef.style.display = searchQuery ? 'inline-flex' : 'none';
+                  clearBtnRef.toggleAttribute('hidden', !searchQuery);
                 }
                 renderLists();
               });
@@ -767,13 +727,43 @@ export async function openPifDeviceSubpage() {
       },
     ],
   });
+
+  // The page is already open on the fallback list; let it paint before
+  // the loads start so they cannot block the page's first frame.
+  await new Promise<void>(resolve => afterPaint(resolve, 300));
+
+  // Now load the real state and re-render. Selection and blacklist are
+  // only applied when the user has not already changed them.
+  const [saved, loadedImported, loadedCanary, loadedBlacklist] = await Promise.all([
+    loadPreferred(),
+    loadImported(),
+    ensureCanaryList(),
+    loadBlacklist(),
+  ]);
+  const pendingImported = imported;
+  imported = [
+    ...pendingImported,
+    ...loadedImported.filter(d => !pendingImported.some(p => p.product === d.product)),
+  ];
+  canary = loadedCanary;
+  if (!targetInteracted) {
+    selectedProduct = saved[0]?.product || '';
+    selectedModel = saved[0]?.model || '';
+  }
+  // A saved blacklist still loads when only the target was touched (or a
+  // file was imported); explicit blacklist edits keep the user's state.
+  if (!blacklistInteracted) {
+    blacklist = loadedBlacklist;
+  }
+  (updateHeaderFn as (() => void) | null)?.();
+  renderLists();
+  pageInstance.overlay.querySelector('#pif-apply')?.removeAttribute('disabled');
 }
 
 export async function wirePifDevice() {
   const row = document.getElementById('pif-choose-device');
   if (!row) return;
   row.hidden = false;
-  updateListContainerCorners();
   void ensureCanaryList();
   row.addEventListener('click', () => {
     void openPifDeviceSubpage();

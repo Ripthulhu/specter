@@ -9,6 +9,7 @@ bootstrap() {
   cleanup 2>/dev/null
   TEST_ROOT=$(mktemp -d /tmp/specter_test_XXXX)
   export TEST_ROOT
+  TMPDIR="$TEST_ROOT"; export TMPDIR
   MOCK_DIR="$TEST_ROOT/mock"; PROPS_DIR="$MOCK_DIR/props"; LOGS_DIR="$MOCK_DIR/logs"
   BIN_DIR="$TEST_ROOT/bin"; CONFIG_DIR="$TEST_ROOT/config"
   SPECTER_DIR="$TEST_ROOT/specter"
@@ -50,6 +51,14 @@ PROPS_DIR="${MOCK_DIR}/props"
 [ -n "$1" ] && { [ -f "$PROPS_DIR/$1" ] && cat "$PROPS_DIR/$1" || exit 1; } || for f in "$PROPS_DIR"/*; do [ -f "$f" ] && printf '[%s]: [%s]\n' "$(basename "$f")" "$(cat "$f")"; done
 MOCK
   chmod +x "$BIN_DIR/getprop"
+
+  # Android's /system/bin/sh is mksh. CI hosts use dash for sh, which lacks
+  # mksh expansions used by some feature scripts; run sh via bash in tests.
+  cat > "$BIN_DIR/sh" << 'MOCK'
+#!/bin/bash
+exec /bin/bash "$@"
+MOCK
+  chmod +x "$BIN_DIR/sh"
 
   cat > "$BIN_DIR/pm" << 'MOCK'
 #!/bin/sh
@@ -127,11 +136,11 @@ mk_module() {
 
 run_feature() {
   _feature="$1"; shift
-  PATH="$BIN_DIR:/usr/bin:/bin" MODDIR="$TEST_ROOT" SPECTER_DIR="$SPECTER_DIR" CONFIG_DIR="$CONFIG_DIR" TRICKY_DIR="$TRICKY_DIR" sh "$REPO_ROOT/src/features/$_feature" "$@" 2>&1
+  PATH="$BIN_DIR:/usr/bin:/bin" MODULE_ROOT="$TEST_ROOT" MODDIR="$TEST_ROOT" SPECTER_DIR="$SPECTER_DIR" CONFIG_DIR="$CONFIG_DIR" TRICKY_DIR="$TRICKY_DIR" sh "$REPO_ROOT/src/features/$_feature" "$@" 2>&1
 }
 
 source_feature() {
-  PATH="$BIN_DIR:/usr/bin:/bin" MODDIR="$TEST_ROOT" SPECTER_DIR="$SPECTER_DIR" CONFIG_DIR="$CONFIG_DIR" . "$REPO_ROOT/src/features/$1" 2>/dev/null || true
+  PATH="$BIN_DIR:/usr/bin:/bin" MODULE_ROOT="$TEST_ROOT" MODDIR="$TEST_ROOT" SPECTER_DIR="$SPECTER_DIR" CONFIG_DIR="$CONFIG_DIR" . "$REPO_ROOT/src/features/$1" 2>/dev/null || true
 }
 
 set_cfg() { mkdir -p "$CONFIG_DIR/val" && printf '%s' "$2" > "$CONFIG_DIR/val/$1.val"; }

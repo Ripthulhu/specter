@@ -1,24 +1,22 @@
 # shellcheck shell=sh
 # HMA-OSS (frknkrc44) config integration.
 #
-# HMA-OSS keeps its config in /data/misc/hide_my_applist*/config.json, written
-# by the system_server-side HMAService (uid 1000 "system"). The app never
-# touches the file itself, and external edits are only picked up on reboot or
-# via the HMA-OSS Home long-press (reloadConfigFromFile).
+# HMA-OSS keeps its config in /data/misc/hide_my_applist*/config.json, owned by
+# the system_server-side HMAService (uid 1000). oss-175+ reloads the file
+# automatically on write; older versions need a reboot or the Home status-card
+# long-press (reloadConfigFromFile).
 #
-# Specter merges a generated hiding profile into the existing file and leaves
+# Specter merges a preset-based hiding profile into the existing file and leaves
 # everything it does not manage byte-for-byte intact:
-#   - upserts the Specter template with only the hide-list packages that are
-#     actually installed on this device
-#   - adds a standard per-app config for every user app (all apps become
-#     targets that cannot see the hidden apps)
-#   - sets defaultConfig for future installs only when the user has none
-#   - drops configVersion so the file parses as the running HMA-OSS build
-#   - chowns the file back to system:system (issue #158)
+#   - adds/updates a blacklist AppConfig for managed user apps
+#   - enables presets on scope entries (detector targets omit detector_apps)
+#   - sets defaultConfig only when the user has none
+#   - drops configVersion and restores system:system ownership (issue #158)
 
 HMAOSS_PKG="org.frknkrc44.hma_oss"
-HMAOSS_TEMPLATE="HIDE MY CUSTOM APP"
-HMAOSS_HIDE_LIST="hma-hide-list.txt"
+HMAOSS_APP_PRESETS='["accessibility_apps","custom_rom","detector_apps","root_apps","shizuku_dhizuku","sus_apps","xposed"]'
+HMAOSS_APP_PRESETS_NO_DETECTORS='["accessibility_apps","custom_rom","root_apps","shizuku_dhizuku","sus_apps","xposed"]'
+HMAOSS_SETTINGS_PRESETS='["accessibility","dev_options","input_method"]'
 : "${HMAOSS_CMD_TIMEOUT:=20}"
 : "${HMAOSS_MERGE_TIMEOUT:=45}"
 
@@ -53,15 +51,124 @@ _hma_find_dir() {
   return 0
 }
 
-# Prefer the user-editable copy in the data dir; fall back to the module copy.
-_hma_list_path() {
-  _hlp_mod="${1:-}"
-  if [ -f "$SPECTER_DIR/config/$HMAOSS_HIDE_LIST" ]; then
-    printf '%s\n' "$SPECTER_DIR/config/$HMAOSS_HIDE_LIST"
-  elif [ -n "$_hlp_mod" ] && [ -f "$_hlp_mod/config/$HMAOSS_HIDE_LIST" ]; then
-    printf '%s\n' "$_hlp_mod/config/$HMAOSS_HIDE_LIST"
+# Locate preset_cache_v2.json in the HMA-OSS service data dir.
+_hma_find_preset_cache() {
+  _hfpc_dir="${1:-}"
+  [ -d "$_hfpc_dir" ] || { unset _hfpc_dir; return 0; }
+  if [ -s "$_hfpc_dir/preset_cache_v2.json" ]; then
+    printf '%s\n' "$_hfpc_dir/preset_cache_v2.json"
   fi
-  unset _hlp_mod
+  unset _hfpc_dir
+  return 0
+}
+
+# Parse HMA-OSS preset cache into two lists:
+#   - sensitive packages to exclude from scope (root_apps, xposed, sus_apps,
+#     shizuku_dhizuku, custom_rom, accessibility_apps)
+#   - detector apps, which stay in scope but must not receive the detector_apps
+#     preset themselves (otherwise Duck Detector cannot see its own package)
+# HMA only exports dynamically detected packages here; exact preset matches are
+# not in the cache, so this remains a best-effort list.
+_hma_preset_cache_apps() {
+  _hpca_file="$1" _hpca_out="$2" _hpca_det="${3:-}"
+  : > "$_hpca_out"
+  [ -n "$_hpca_det" ] && : > "$_hpca_det"
+  [ -f "$_hpca_file" ] || { unset _hpca_file _hpca_out _hpca_det; return 0; }
+  _hma_timeout "$HMAOSS_CMD_TIMEOUT" awk -v detfile="$_hpca_det" '
+function unquote(s) {
+  gsub(/^"/, "", s); gsub(/"$/, "", s)
+  gsub(/\\"/, "\"", s); gsub(/\\\\/, "\\", s)
+  return s
+}
+function tokenize(s,   n, off, chunk, clen, i, c, abs) {
+  tn = 0; n = length(s); off = 1
+  instr = 0; esc = 0; intok = 0; tstart = 0; tc = ""
+  while (off <= n) {
+    chunk = substr(s, off, 1024)
+    clen = length(chunk)
+    for (i = 1; i <= clen; i++) {
+      c = substr(chunk, i, 1)
+      abs = off + i - 1
+      if (instr) {
+        if (esc) { esc = 0; tc = tc c }
+        else if (c == "\\") { esc = 1; tc = tc c }
+        else if (c == "\"") {
+          tk[++tn] = tc "\""; tp[tn] = tstart; te[tn] = abs + 1
+          instr = 0; intok = 0; tc = ""
+        }
+        else { tc = tc c }
+        continue
+      }
+      if (c == " " || c == "\t" || c == "\r" || c == "\n") {
+        if (intok) { tk[++tn] = tc; tp[tn] = tstart; te[tn] = abs; intok = 0; tc = "" }
+        continue
+      }
+      if (c == "{" || c == "}" || c == "[" || c == "]" || c == ":" || c == ",") {
+        if (intok) { tk[++tn] = tc; tp[tn] = tstart; te[tn] = abs; intok = 0; tc = "" }
+        tk[++tn] = c; tp[tn] = abs; te[tn] = abs + 1
+        continue
+      }
+      if (c == "\"") {
+        if (intok) { tk[++tn] = tc; tp[tn] = tstart; te[tn] = abs; intok = 0 }
+        instr = 1; esc = 0; tstart = abs; tc = "\""; intok = 1
+        continue
+      }
+      if (!intok) { intok = 1; tstart = abs; tc = "" }
+      tc = tc c
+    }
+    off += 1024
+  }
+  if (intok) { tk[++tn] = tc; tp[tn] = tstart; te[tn] = n + 1 }
+}
+BEGIN {
+  RS = "\001"
+  if (ARGV[1] != "" && (getline raw < ARGV[1]) <= 0) raw = ""
+  if (ARGV[1] != "") close(ARGV[1])
+  if (raw == "") exit 0
+
+  tokenize(raw)
+
+  in_cache = 0
+  cache_depth = 0
+  in_array = 0
+  cur_preset = ""
+
+  for (i = 1; i <= tn; i++) {
+    t = tk[i]
+    if (!in_cache) {
+      if (t == "\"cache\"" && i + 2 <= tn && tk[i+1] == ":" && tk[i+2] == "{") {
+        in_cache = 1
+        cache_depth = 1
+        i += 2
+      }
+      continue
+    }
+
+    if (t == "{") {
+      cache_depth++
+    } else if (t == "}") {
+      cache_depth--
+      if (cache_depth == 0) break
+    } else if (t == "[") {
+      in_array = 1
+    } else if (t == "]") {
+      in_array = 0
+    } else if (cache_depth == 1 && t ~ /^"/ && i + 1 <= tn && tk[i+1] == ":") {
+      cur_preset = unquote(t)
+    } else if (in_array && t ~ /^"/) {
+      pkg = unquote(t)
+      if (pkg == "") continue
+      if (cur_preset == "detector_apps") {
+        if (detfile != "" && !seend[pkg]++) print pkg > detfile
+      } else if (!seen[pkg]++) {
+        print pkg
+      }
+    }
+  }
+}
+END { if (detfile != "") close(detfile) }
+' "$_hpca_file" > "$_hpca_out"
+  unset _hpca_file _hpca_out _hpca_det
   return 0
 }
 
@@ -77,21 +184,128 @@ _hma_installed() {
   return 0
 }
 
-# User apps that become hiding targets, minus the Specter blacklist.
+# Output package names currently in the HMA-OSS config scope.
+_hma_list_scope() {
+  _hls_file="$1"
+  [ -f "$_hls_file" ] || { unset _hls_file; return 0; }
+  _hma_timeout "$HMAOSS_CMD_TIMEOUT" awk '
+function unquote(s) {
+  gsub(/^"/, "", s); gsub(/"$/, "", s)
+  gsub(/\\"/, "\"", s); gsub(/\\\\/, "\\", s)
+  return s
+}
+function tokenize(s,   n, off, chunk, clen, i, c, abs) {
+  tn = 0; n = length(s); off = 1
+  instr = 0; esc = 0; intok = 0; tstart = 0; tc = ""
+  while (off <= n) {
+    chunk = substr(s, off, 1024)
+    clen = length(chunk)
+    for (i = 1; i <= clen; i++) {
+      c = substr(chunk, i, 1)
+      abs = off + i - 1
+      if (instr) {
+        if (esc) { esc = 0; tc = tc c }
+        else if (c == "\\") { esc = 1; tc = tc c }
+        else if (c == "\"") {
+          tk[++tn] = tc "\""; tp[tn] = tstart; te[tn] = abs + 1
+          instr = 0; intok = 0; tc = ""
+        }
+        else { tc = tc c }
+        continue
+      }
+      if (c == " " || c == "\t" || c == "\r" || c == "\n") {
+        if (intok) { tk[++tn] = tc; tp[tn] = tstart; te[tn] = abs; intok = 0; tc = "" }
+        continue
+      }
+      if (c == "{" || c == "}" || c == "[" || c == "]" || c == ":" || c == ",") {
+        if (intok) { tk[++tn] = tc; tp[tn] = tstart; te[tn] = abs; intok = 0; tc = "" }
+        tk[++tn] = c; tp[tn] = abs; te[tn] = abs + 1
+        continue
+      }
+      if (c == "\"") {
+        if (intok) { tk[++tn] = tc; tp[tn] = tstart; te[tn] = abs; intok = 0 }
+        instr = 1; esc = 0; tstart = abs; tc = "\""; intok = 1
+        continue
+      }
+      if (!intok) { intok = 1; tstart = abs; tc = "" }
+      tc = tc c
+    }
+    off += 1024
+  }
+  if (intok) { tk[++tn] = tc; tp[tn] = tstart; te[tn] = n + 1 }
+}
+function skipv(i,   d, t) {
+  t = tk[i]
+  if (t == "{") { d = 1; i++; while (i <= tn && d > 0) { if (tk[i] == "{") d++; else if (tk[i] == "}") d--; i++ } return i }
+  if (t == "[") { d = 1; i++; while (i <= tn && d > 0) { if (tk[i] == "[") d++; else if (tk[i] == "]") d--; i++ } return i }
+  return i + 1
+}
+BEGIN {
+  RS = "\001"
+  if ((getline raw < ARGV[1]) <= 0) raw = ""
+  close(ARGV[1])
+  if (raw == "") exit 0
+  tokenize(raw)
+  if (tn < 2 || tk[1] != "{") exit 0
+  i = 2
+  while (i <= tn && tk[i] != "}") {
+    if (tk[i] ~ /^"/) {
+      k = unquote(tk[i]); i++
+      if (tk[i] == ":") i++
+      if (k == "scope" && tk[i] == "{") {
+        i++
+        while (i <= tn && tk[i] != "}") {
+          if (tk[i] ~ /^"/) {
+            pkg = unquote(tk[i]); i++
+            if (tk[i] == ":") i++
+            i = skipv(i)
+            if (pkg != "") print pkg
+            if (tk[i] == ",") i++
+          } else i++
+        }
+        break
+      } else {
+        i = skipv(i)
+        if (tk[i] == ",") i++
+      }
+    } else i++
+  }
+}
+' "$_hls_file"
+  unset _hls_file
+  return 0
+}
+
+# User apps that become hiding targets, minus the Specter blacklist and apps
+# detected by HMA presets that must not be targeted themselves.
 _hma_user_apps() {
+  _hua_exclude="${1:-}"
   _hua_bl=""
   if [ -f "$SPECTER_DIR/blacklist_enabled" ] && [ -s "$SPECTER_DIR/blacklist.txt" ]; then
     _hua_bl="$SPECTER_DIR/blacklist.txt"
   fi
   _hma_timeout "$HMAOSS_CMD_TIMEOUT" pm list packages -3 2>/dev/null | awk \
-    -v hma="$HMAOSS_PKG" -v bl_file="$_hua_bl" '
+    -v hma="$HMAOSS_PKG" -v bl_file="$_hua_bl" -v exclude_file="$_hua_exclude" '
     BEGIN {
       if (bl_file != "") {
         while ((getline b < bl_file) > 0) {
           gsub(/\r/, "", b)
-          if (b != "") black[b] = 1
+          gsub(/^[[:space:]]+/, "", b)
+          gsub(/[[:space:]]+$/, "", b)
+          sub(/[[:space:]].*$/, "", b)
+          if (b != "" && b !~ /^#/) black[b] = 1
         }
         close(bl_file)
+      }
+      if (exclude_file != "") {
+        while ((getline ex < exclude_file) > 0) {
+          gsub(/\r/, "", ex)
+          gsub(/^[[:space:]]+/, "", ex)
+          gsub(/[[:space:]]+$/, "", ex)
+          sub(/[[:space:]].*$/, "", ex)
+          if (ex != "" && ex !~ /^#/) excluded[ex] = 1
+        }
+        close(exclude_file)
       }
     }
     {
@@ -99,77 +313,84 @@ _hma_user_apps() {
       sub(/^package:/, "", $0)
       if ($0 == "" || $0 == hma) next
       if ($0 in black) next
+      if ($0 in excluded) next
       if (seen[$0]++) next
       print
     }
   '
-  unset _hua_bl
+  unset _hua_exclude _hua_bl
   return 0
 }
 
-# Keep only hide-list entries whose package is installed on this device.
-_hma_filter_hide_list() {
-  _hfl_list="$1" _hfl_inst="$2" _hfl_out="$3"
-  : > "$_hfl_out"
-  if [ ! -f "$_hfl_list" ] || [ ! -s "$_hfl_inst" ]; then
-    unset _hfl_list _hfl_inst _hfl_out
-    return 0
-  fi
-  awk -v inst="$_hfl_inst" '
-    BEGIN {
-      while ((getline p < inst) > 0) {
-        gsub(/\r/, "", p)
-        if (p != "") installed[p] = 1
-      }
-      close(inst)
-    }
-    {
-      gsub(/\r/, "", $0)
-      if ($0 == "" || $0 ~ /^#/) next
-      sub(/ .*$/, "", $0)
-      if ($0 != "" && ($0 in installed) && !seen[$0]++) print
-    }
-  ' "$_hfl_list" > "$_hfl_out"
-  unset _hfl_list _hfl_inst _hfl_out
-  return 0
-}
-
-# Standard per-target AppConfig: blacklist mode (the template lists what is
-# hidden), HMA's own presets for the rest of the detection surface.
+# Standard per-target AppConfig: blacklist mode, all HMA-OSS built-in presets
+# enabled for detection surface, templates empty by default. Pass "no-detectors"
+# for detector targets, which must keep seeing their own preset packages.
 _hma_appconfig_json() {
-  printf '{"useWhitelist":false,"excludeSystemApps":true,"hideInstallationSource":false,"hideSystemInstallationSource":false,"excludeTargetInstallationSource":false,"invertActivityLaunchProtection":false,"excludeVoldIsolation":false,"restrictedZygotePermissions":[],"applyTemplates":["%s"],"applyPresets":["custom_rom","detector_apps","root_apps","shizuku_dhizuku","sus_apps","xposed"],"applySettingTemplates":[],"applySettingsPresets":["accessibility","dev_options","input_method"],"extraAppList":[],"extraOppositeAppList":[]}' "$1"
+  _hac_presets="$HMAOSS_APP_PRESETS"
+  [ "${1:-}" = "no-detectors" ] && _hac_presets="$HMAOSS_APP_PRESETS_NO_DETECTORS"
+  printf '{"useWhitelist":false,"excludeSystemApps":true,"hideInstallationSource":false,"hideSystemInstallationSource":false,"excludeTargetInstallationSource":false,"invertActivityLaunchProtection":false,"excludeVoldIsolation":false,"restrictedZygotePermissions":[],"applyTemplates":[],"applyPresets":%s,"applySettingTemplates":[],"applySettingsPresets":%s,"extraAppList":[],"extraOppositeAppList":[]}' "$_hac_presets" "$HMAOSS_SETTINGS_PRESETS"
+  unset _hac_presets
   return 0
 }
 
-# One "pkg<TAB>AppConfig" line per scope addition.
+# One "pkg<TAB>AppConfig" line per scope addition. Detector targets get the
+# config without the detector_apps preset.
 _hma_build_scope() {
-  _hbs_apps="$1" _hbs_tpl="$2" _hbs_out="$3" _hbs_def="${4:-}"
-  if [ -n "$_hbs_def" ] && [ -f "$_hbs_def" ]; then
-    awk -v def="$_hbs_def" '
+  _hbs_apps="$1" _hbs_out="$2" _hbs_def="$3" _hbs_def6="$4" _hbs_det="$5"
+  if [ -f "$_hbs_def" ]; then
+    awk -v def="$_hbs_def" -v def6="$_hbs_def6" -v detfile="$_hbs_det" '
       BEGIN {
-        if ((getline ac < def) > 0) sub(/\r$/, "", ac)
+        if ((getline ac7 < def) > 0) sub(/\r$/, "", ac7)
         close(def)
+        if (def6 != "" && (getline ac6 < def6) > 0) sub(/\r$/, "", ac6)
+        if (def6 != "") close(def6)
+        if (ac6 == "") ac6 = ac7
+        if (detfile != "") {
+          while ((getline p < detfile) > 0) {
+            sub(/\r$/, "", p)
+            if (p != "") det[p] = 1
+          }
+          close(detfile)
+        }
       }
-      { if ($0 != "") print $0 "\t" ac }
+      { if ($0 != "") print $0 "\t" ($0 in det ? ac6 : ac7) }
     ' "$_hbs_apps" > "$_hbs_out"
   else
-    _hbs_ac=$(_hma_appconfig_json "$_hbs_tpl")
-    HMAOSS_AC="$_hbs_ac" awk '{ if ($0 != "") print $0 "\t" ENVIRON["HMAOSS_AC"] }' \
-      "$_hbs_apps" > "$_hbs_out"
+    _hbs_ac=$(_hma_appconfig_json)
+    _hbs_ac6=$(_hma_appconfig_json no-detectors)
+    HMAOSS_AC="$_hbs_ac" HMAOSS_AC6="$_hbs_ac6" HMAOSS_DET="$_hbs_det" awk '
+      BEGIN {
+        if (ENVIRON["HMAOSS_DET"] != "") {
+          while ((getline p < ENVIRON["HMAOSS_DET"]) > 0) {
+            sub(/\r$/, "", p)
+            if (p != "") det[p] = 1
+          }
+          close(ENVIRON["HMAOSS_DET"])
+        }
+      }
+      { if ($0 != "") print $0 "\t" ($0 in det ? ENVIRON["HMAOSS_AC6"] : ENVIRON["HMAOSS_AC"]) }
+    ' "$_hbs_apps" > "$_hbs_out"
+    unset HMAOSS_AC HMAOSS_AC6 HMAOSS_DET
   fi
-  unset _hbs_apps _hbs_tpl _hbs_out _hbs_def _hbs_ac
+  unset _hbs_apps _hbs_out _hbs_def _hbs_def6 _hbs_det _hbs_ac _hbs_ac6
   return 0
 }
 
-# Lossless JSON merge: tokenizes the existing config, splices in the template,
-# scope additions and defaultConfig, removes configVersion, and re-emits the
-# original bytes everywhere else. Exits non-zero and writes nothing when the
-# base is not a JSON object or the result does not balance.
+# Lossless JSON merge: tokenizes the existing config, upserts scope entries and
+# defaultConfig, removes configVersion, and re-emits the original bytes
+# everywhere else. Managed blacklist entries get all HMA-OSS app presets except
+# detector targets, which omit the detector_apps preset.
+# Exits non-zero and writes nothing when the base is not a JSON object or the
+# result does not balance.
 _hma_merge_config() {
-  _hmc_base="$1" _hmc_apps="$2" _hmc_scope="$3" _hmc_default="$4" _hmc_out="$5" _hmc_skip="${6:-}"
-  _hmc_timeout="${7:-$HMAOSS_MERGE_TIMEOUT}"
-  _hma_timeout "$_hmc_timeout" awk -v cfg="$_hmc_base" -v tpl="$HMAOSS_TEMPLATE" -v applist="$_hmc_apps" \
-      -v scopefile="$_hmc_scope" -v deffile="$_hmc_default" -v skiptpl="$_hmc_skip" '
+  _hmc_base="$1" _hmc_scope="$2" _hmc_default="$3" _hmc_out="$4"
+  _hmc_timeout="${5:-$HMAOSS_MERGE_TIMEOUT}" _hmc_exclude="${6:-}" _hmc_det="${7:-}"
+  _hmc_mode="${8:-merge}"
+  _hma_timeout "$_hmc_timeout" awk -v cfg="$_hmc_base" -v scopefile="$_hmc_scope" \
+      -v deffile="$_hmc_default" -v excludefile="$_hmc_exclude" \
+      -v detectorsfile="$_hmc_det" -v presets="$HMAOSS_APP_PRESETS" \
+      -v presets_no_detectors="$HMAOSS_APP_PRESETS_NO_DETECTORS" \
+      -v scope_mode="$_hmc_mode" '
 function jesc(s) { gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); return s }
 
 function unquote(s) {
@@ -228,40 +449,61 @@ function skipv(i,   d, t) {
 
 function add_edit(s, e, r) { ne++; es[ne] = s; ee[ne] = e; er[ne] = r }
 
-function scan_obj(vi0, vi1, kset,   i, k) {
-  hasany = 0
+function scan_obj(vi0, vi1, kset,   i, k, found) {
+  found = 0
   i = vi0 + 1
   while (i < vi1) {
     if (tk[i] ~ /^"/) {
       k = unquote(tk[i]); i++
       if (tk[i] == ":") i++
-      hasany = 1
+      found = 1
       kset[k] = i
       i = skipv(i)
       if (tk[i] == ",") i++
     } else i++
   }
+  return found
 }
 
-function build_template(   out, c, l) {
-  out = "{\"isWhitelist\":false,\"appList\":["
-  c = 0
-  while ((getline l < applist) > 0) {
-    sub(/\r$/, "", l)
-    if (l == "") continue
-    c++
-    out = out (c > 1 ? "," : "") "\"" jesc(l) "\""
+function normalize_appconfig(val, pkg,   field, pset) {
+  # Whitelist entries are user-managed; never add blacklist presets to them.
+  if (val ~ /"useWhitelist"[[:space:]]*:[[:space:]]*true/) return val
+  pset = (pkg in detectors) ? presets_no_detectors : presets
+  field = "\"applyPresets\":" pset
+  if (match(val, /"applyPresets"[[:space:]]*:[[:space:]]*\[[^]]*\]/)) {
+    val = substr(val, 1, RSTART - 1) field substr(val, RSTART + RLENGTH)
+  } else if (match(val, /"applyPresets"[[:space:]]*:[[:space:]]*[^,}]+/)) {
+    val = substr(val, 1, RSTART - 1) field substr(val, RSTART + RLENGTH)
+  } else if (val ~ /\{[[:space:]]*\}/) {
+    sub(/\{[[:space:]]*\}/, "{" field "}", val)
+  } else {
+    sub(/\}[[:space:]]*$/, "," field "}", val)
   }
-  close(applist)
-  return out "]}"
+  return val
 }
 
 BEGIN {
   RS = "\001"
-  if ((getline raw < cfg) > 0) { }
-  close(cfg)
+  if (cfg != "" && (getline raw < cfg) <= 0) raw = ""
+  if (cfg != "") close(cfg)
   RS = "\n"
   if (raw == "") raw = "{}"
+
+  if (excludefile != "") {
+    while ((getline ex < excludefile) > 0) {
+      sub(/\r$/, "", ex)
+      if (ex != "") excluded[ex] = 1
+    }
+    close(excludefile)
+  }
+
+  if (detectorsfile != "") {
+    while ((getline dp < detectorsfile) > 0) {
+      sub(/\r$/, "", dp)
+      if (dp != "") detectors[dp] = 1
+    }
+    close(detectorsfile)
+  }
 
   tokenize(raw)
   if (tn < 2 || tk[1] != "{") exit 3
@@ -284,74 +526,111 @@ BEGIN {
   }
   if (i > tn || tk[i] != "}") exit 3
 
-  cfg_i = 0; tpl_i = 0; scope_i = 0; def_i = 0
+  cfg_i = 0; scope_i = 0; def_i = 0
   for (m = 1; m <= nm; m++) {
     if (mk[m] == "configVersion") cfg_i = m
-    else if (mk[m] == "templates") tpl_i = m
     else if (mk[m] == "scope") scope_i = m
     else if (mk[m] == "defaultConfig") def_i = m
   }
 
   defjson = ""
-  if ((getline d < deffile) > 0) { sub(/\r$/, "", d); defjson = d }
-  close(deffile)
+  if (deffile != "" && (getline d < deffile) > 0) { sub(/\r$/, "", d); defjson = d }
+  if (deffile != "") close(deffile)
 
-  tpl_new = build_template()
   root_parts = ""
 
-  if (skiptpl != "1") {
-    if (tpl_i > 0) {
-      if (tk[mvi0[tpl_i]] == "{") {
-        scan_obj(mvi0[tpl_i], mvi1[tpl_i], tset)
-        if (tpl in tset) {
-          vi = tset[tpl]
-          add_edit(tp[vi], te[skipv(vi) - 1], tpl_new)
-        } else {
-          ins = "\"" jesc(tpl) "\":" tpl_new
-          if (hasany) ins = ins ","
-          add_edit(te[mvi0[tpl_i]], te[mvi0[tpl_i]], ins)
-        }
-      } else {
-        add_edit(mvs[tpl_i], mve[tpl_i], "{\"" jesc(tpl) "\":" tpl_new "}")
+  wanted_count = 0
+  if (scopefile != "") {
+    while ((getline w < scopefile) > 0) {
+      sub(/\r$/, "", w)
+      tabi = index(w, "\t")
+      if (tabi > 0) {
+        p = substr(w, 1, tabi - 1)
+        wanted[p] = substr(w, tabi + 1)
+        wanted_order[++wanted_count] = p
       }
-    } else {
-      root_parts = root_parts "\"templates\":{\"" jesc(tpl) "\":" tpl_new "}"
     }
+    close(scopefile)
   }
 
   scope_exists = (scope_i > 0 && tk[mvi0[scope_i]] == "{")
-  if (scope_exists) scan_obj(mvi0[scope_i], mvi1[scope_i], sset)
-  scope_hasany = hasany
+  scope_hasany = 0
+  if (scope_exists) scope_hasany = scan_obj(mvi0[scope_i], mvi1[scope_i], sset)
 
-  nadds = 0; addtext = ""
-  while ((getline l < scopefile) > 0) {
-    sub(/\r$/, "", l)
-    if (l == "") continue
-    tabi = index(l, "\t")
-    if (tabi == 0) continue
-    p = substr(l, 1, tabi - 1); js = substr(l, tabi + 1)
-    if (scope_exists && (p in sset)) continue
-    nadds++
-    addtext = addtext (nadds > 1 ? "," : "") "\"" jesc(p) "\":" js
-  }
-  close(scopefile)
-
-  if (scope_i > 0) {
-    if (scope_exists) {
-      if (nadds > 0) {
-        ins = addtext
-        if (scope_hasany) ins = ins ","
-        add_edit(te[mvi0[scope_i]], te[mvi0[scope_i]], ins)
-      }
-    } else {
-      add_edit(mvs[scope_i], mve[scope_i], "{" addtext "}")
+  if (scope_exists) {
+    end_scope = skipv(mvi0[scope_i]) - 1
+    i = mvi0[scope_i] + 1
+    kept_text = ""
+    nkept = 0
+    while (i < end_scope) {
+      if (tk[i] ~ /^"/) {
+        k = unquote(tk[i]); i++
+        if (tk[i] == ":") i++
+        vs = i
+        ve = skipv(vs) - 1
+        i = ve + 1
+        if (!(k in excluded)) {
+          val_str = substr(raw, tp[vs], te[ve] - tp[vs])
+          if (scope_mode == "replace") {
+            if (val_str ~ /"useWhitelist"[[:space:]]*:[[:space:]]*true/) {
+              nkept++
+              kept_text = kept_text (nkept > 1 ? "," : "") "\"" jesc(k) "\":" val_str
+            } else if (k in wanted) {
+              nkept++
+              val_str = normalize_appconfig(val_str, k)
+              kept_text = kept_text (nkept > 1 ? "," : "") "\"" jesc(k) "\":" val_str
+            }
+          } else {
+            nkept++
+            val_str = normalize_appconfig(val_str, k)
+            kept_text = kept_text (nkept > 1 ? "," : "") "\"" jesc(k) "\":" val_str
+          }
+        }
+        if (tk[i] == ",") i++
+      } else i++
     }
-  } else if (nadds > 0) {
-    root_parts = root_parts (root_parts == "" ? "" : ",") "\"scope\":{" addtext "}"
+
+    nadds = 0; addtext = ""
+    for (wi = 1; wi <= wanted_count; wi++) {
+      p = wanted_order[wi]
+      if (p in sset) continue
+      if (p in excluded) continue
+      js = normalize_appconfig(wanted[p], p)
+      nadds++
+      addtext = addtext (nadds > 1 ? "," : "") "\"" jesc(p) "\":" js
+    }
+
+    ins = kept_text
+    if (addtext != "") ins = ins (nkept > 0 ? "," : "") addtext
+    add_edit(tp[mvi0[scope_i]], te[end_scope], "{" ins "}")
+  } else {
+    nadds = 0; addtext = ""
+    for (wi = 1; wi <= wanted_count; wi++) {
+      p = wanted_order[wi]
+      if (scope_exists && (p in sset)) continue
+      if (p in excluded) continue
+      js = normalize_appconfig(wanted[p], p)
+      nadds++
+      addtext = addtext (nadds > 1 ? "," : "") "\"" jesc(p) "\":" js
+    }
+
+    if (scope_i > 0) {
+      if (scope_exists) {
+        if (nadds > 0) {
+          ins = addtext
+          if (scope_hasany) ins = ins ","
+          add_edit(te[mvi0[scope_i]], te[mvi0[scope_i]], ins)
+        }
+      } else {
+        add_edit(mvs[scope_i], mve[scope_i], "{" addtext "}")
+      }
+    } else if (nadds > 0) {
+      root_parts = root_parts (root_parts == "" ? "" : ",") "\"scope\":{" addtext "}"
+    }
   }
 
   if (def_i > 0) {
-    if (tk[mvi0[def_i]] == "null") add_edit(mvs[def_i], mve[def_i], defjson)
+    if (defjson != "" && tk[mvi0[def_i]] == "null") add_edit(mvs[def_i], mve[def_i], defjson)
   } else if (defjson != "") {
     root_parts = root_parts (root_parts == "" ? "" : ",") "\"defaultConfig\":" defjson
   }
@@ -402,11 +681,11 @@ BEGIN {
   if [ "$_hmc_rc" -ne 0 ]; then
     rm -f "$_hmc_out" 2>/dev/null || true
   fi
-  unset _hmc_base _hmc_apps _hmc_scope _hmc_default _hmc_out
+  unset _hmc_base _hmc_scope _hmc_default _hmc_out _hmc_timeout _hmc_exclude _hmc_det _hmc_mode
   return "$_hmc_rc"
 }
 
-# Read the existing config even when it is system-owned (WebUI sandbox).
+# Read an HMA file even when it is system-owned (WebUI sandbox).
 _hma_copy_config() {
   _hcc_src="$1" _hcc_dst="$2"
   cp -f "$_hcc_src" "$_hcc_dst" 2>/dev/null || \
@@ -424,19 +703,31 @@ _hma_backup() {
   return 0
 }
 
-# Atomic write + system ownership (issue #158: HMAService only ever checks
+# In-place write + system ownership (issue #158: HMAService only ever checks
 # R_OK|W_OK as uid 1000, it never repairs ownership itself).
+# HMA watches the config inode with FileObserver(CLOSE_WRITE|ATTRIB). Replacing
+# it with mv orphans that watcher, so write through the existing inode.
 _hma_install_config() {
   _hic_src="$1" _hic_dst="$2" _hic_dir="$3"
+  _hic_new="$_hic_dst.specter.new"
   _hic_ok=0
-  if cp -f "$_hic_src" "$_hic_dst.specter.new" 2>/dev/null &&
-     chown "$HMAOSS_UID:$HMAOSS_UID" "$_hic_dst.specter.new" 2>/dev/null &&
-     chmod 600 "$_hic_dst.specter.new" 2>/dev/null &&
-     mv -f "$_hic_dst.specter.new" "$_hic_dst" 2>/dev/null; then
-    _hic_ok=1
-  else
-    rm -f "$_hic_dst.specter.new" 2>/dev/null || true
-    _hma_timeout "$HMAOSS_CMD_TIMEOUT" su -c "cp -f '$_hic_src' '$_hic_dst.specter.new' && chown $HMAOSS_UID:$HMAOSS_UID '$_hic_dst.specter.new' && chmod 600 '$_hic_dst.specter.new' && mv -f '$_hic_dst.specter.new' '$_hic_dst'" 2>/dev/null && _hic_ok=1
+  rm -f "$_hic_new" 2>/dev/null || true
+  if cp -f "$_hic_src" "$_hic_new" 2>/dev/null &&
+     chown "$HMAOSS_UID:$HMAOSS_UID" "$_hic_new" 2>/dev/null &&
+     chmod 600 "$_hic_new" 2>/dev/null; then
+    if cat "$_hic_new" > "$_hic_dst" 2>/dev/null; then
+      chown "$HMAOSS_UID:$HMAOSS_UID" "$_hic_dst" 2>/dev/null || true
+      chmod 600 "$_hic_dst" 2>/dev/null || true
+      _hic_ok=1
+    fi
+  fi
+  if [ "$_hic_ok" != "1" ]; then
+    _hma_timeout "$HMAOSS_CMD_TIMEOUT" su -c "cp -f '$_hic_src' '$_hic_new' && chown $HMAOSS_UID:$HMAOSS_UID '$_hic_new' && chmod 600 '$_hic_new' && cat '$_hic_new' > '$_hic_dst' && chown $HMAOSS_UID:$HMAOSS_UID '$_hic_dst' && chmod 600 '$_hic_dst'" 2>/dev/null && _hic_ok=1
+  fi
+  rm -f "$_hic_new" 2>/dev/null || true
+  if [ "$_hic_ok" != "1" ] && [ -f "$_hic_dst.specter.bak" ]; then
+    cat "$_hic_dst.specter.bak" > "$_hic_dst" 2>/dev/null || \
+      _hma_timeout "$HMAOSS_CMD_TIMEOUT" su -c "cat '$_hic_dst.specter.bak' > '$_hic_dst'" 2>/dev/null || true
   fi
   if [ "$_hic_ok" = "1" ]; then
     chown "$HMAOSS_UID:$HMAOSS_UID" "$_hic_dir" 2>/dev/null || \
@@ -446,103 +737,19 @@ _hma_install_config() {
         _hma_timeout "$HMAOSS_CMD_TIMEOUT" su -c "restorecon '$_hic_dst'" 2>/dev/null || true
     fi
   fi
-  unset _hic_src _hic_dst _hic_dir
+  unset _hic_src _hic_dst _hic_dir _hic_new
   [ "$_hic_ok" = "1" ]
 }
 
 _hma_tmp_base() {
-  if mkdir -p "$SPECTER_DIR/tmp" 2>/dev/null && : > "$SPECTER_DIR/tmp/.hma_probe" 2>/dev/null; then
+  if [ -n "${SPECTER_DIR:-}" ] && mkdir -p "$SPECTER_DIR/tmp" 2>/dev/null && : > "$SPECTER_DIR/tmp/.hma_probe" 2>/dev/null; then
     rm -f "$SPECTER_DIR/tmp/.hma_probe" 2>/dev/null || true
     printf '%s\n' "$SPECTER_DIR/tmp"
-  else
+  elif mkdir -p "/data/local/tmp" 2>/dev/null && : > "/data/local/tmp/.hma_probe" 2>/dev/null; then
+    rm -f "/data/local/tmp/.hma_probe" 2>/dev/null || true
     printf '%s\n' /data/local/tmp
+  else
+    printf '%s\n' "${TMPDIR:-/tmp}"
   fi
   return 0
-}
-
-HMAOSS_ACTIVITY="org.frknkrc44.hma_oss.ui.activity.MainActivity"
-
-# Returns open, skip, or ask so both launch paths read the setting the same way.
-_hma_launch_policy() {
-  case "$(cfg_get "hma_launch_mode" "prompt")" in
-    always) printf 'open\n' ;;
-    never) printf 'skip\n' ;;
-    *) printf 'ask\n' ;;
-  esac
-}
-
-_hma_open_ui() {
-  _hma_timeout 10 am start -n "$HMAOSS_PKG/$HMAOSS_ACTIVITY" >/dev/null 2>&1 && return 0
-  _hma_timeout 10 monkey -p "$HMAOSS_PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
-}
-
-# HMA-OSS reloads its service config from the file only through the status
-# card long-press on its Home screen (the ServiceProvider is not exported and
-# no broadcast/binder path exists), so drive that gesture once. Best effort:
-# returns non-zero when the UI could not be reached, callers fall back to the
-# reboot/long-press hint. Set SPECTER_HMA_NO_UI_RELOAD=1 to always skip.
-# $1 = scratch directory for the UI dump.
-_hma_request_reload() {
-  _hml_dir="${1:-/data/local/tmp}"
-  [ "${SPECTER_HMA_NO_UI_RELOAD:-}" = "1" ] && return 1
-  _hml_end=$(( $(date +%s) + 12 ))
-  command -v am >/dev/null 2>&1 || return 1
-  command -v input >/dev/null 2>&1 || return 1
-  command -v uiautomator >/dev/null 2>&1 || return 1
-
-  _hml_prev=$(_hma_timeout 10 dumpsys activity activities 2>/dev/null | grep 'mResumedActivity' | head -1 | \
-    sed -n 's/.* u[0-9][0-9]* \([^ ]*\) t[0-9].*/\1/p')
-  [ "$_hml_prev" = "$HMAOSS_PKG/$HMAOSS_ACTIVITY" ] && _hml_prev=""
-
-  if ! _hma_timeout 15 am start -n "$HMAOSS_PKG/$HMAOSS_ACTIVITY" >/dev/null 2>&1; then
-    unset _hml_prev _hml_dir
-    return 1
-  fi
-
-  _hml_focus=0
-  _hml_i=0
-  while [ "$_hml_i" -lt 20 ]; do
-    [ "$(date +%s)" -ge "$_hml_end" ] && break
-    if _hma_timeout 10 dumpsys window 2>/dev/null | grep -q "mCurrentFocus=.*$HMAOSS_PKG"; then
-      _hml_focus=1
-      break
-    fi
-    sleep 0.25 2>/dev/null || sleep 1
-    _hml_i=$((_hml_i + 1))
-  done
-
-  _hml_rc=1
-  _hml_dump="$_hml_dir/.specter_hma_ui.$$"
-  if [ "$_hml_focus" = "1" ]; then
-    _hml_bounds=""
-    _hml_i=0
-    while [ "$_hml_i" -lt 6 ]; do
-      [ "$(date +%s)" -ge "$_hml_end" ] && break
-      sleep 0.5 2>/dev/null || sleep 1
-      if _hma_timeout 15 uiautomator dump "$_hml_dump" >/dev/null 2>&1; then
-        # The whole hierarchy is one line, so split tags before matching.
-        _hml_bounds=$(tr '>' '\n' < "$_hml_dump" 2>/dev/null | grep 'status_card' | \
-          grep -o 'bounds="\[[0-9-]*,[0-9-]*\]\[[0-9-]*,[0-9-]*\]"' | head -1)
-      fi
-      [ -n "$_hml_bounds" ] && break
-      _hml_i=$((_hml_i + 1))
-    done
-    if [ -n "$_hml_bounds" ]; then
-      _hml_cx=$(printf '%s' "$_hml_bounds" | awk -F'[^0-9]+' '{print int(($2 + $4) / 2)}')
-      _hml_cy=$(printf '%s' "$_hml_bounds" | awk -F'[^0-9]+' '{print int(($3 + $5) / 2)}')
-      if [ -n "$_hml_cx" ] && [ -n "$_hml_cy" ]; then
-        sleep 0.5 2>/dev/null || true
-        _hma_timeout 10 input swipe "$_hml_cx" "$_hml_cy" "$_hml_cx" "$_hml_cy" 900 2>/dev/null && _hml_rc=0
-        sleep 1 2>/dev/null || true
-      fi
-    fi
-  fi
-  rm -f "$_hml_dump" 2>/dev/null || true
-
-  if [ -n "$_hml_prev" ]; then
-    _hma_timeout 15 am start -n "$_hml_prev" >/dev/null 2>&1 || true
-  fi
-
-  unset _hml_dir _hml_prev _hml_focus _hml_i _hml_dump _hml_bounds _hml_cx _hml_cy _hml_end
-  return "$_hml_rc"
 }

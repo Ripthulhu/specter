@@ -1,9 +1,11 @@
-# shellcheck shell=sh disable=SC2034
+# shellcheck shell=ksh disable=SC2034
 
 # -- URL definitions --
 KEYBOX_URL="https://rawbin.dpejoh.com/key"
+KEYBOX_URL_FALLBACK="https://rawbin.dpejoh.workers.dev/key"
 ATTESTATION_URL="https://rawbin.dpejoh.com/clips/attestation"
 CATALOG_URL="https://rawbin.dpejoh.com/catalog"
+CATALOG_URL_FALLBACK="https://rawbin.dpejoh.workers.dev/catalog"
 GOOGLE_REVOCATION_URL="https://android.googleapis.com/attestation/status?encrypted=0"
 FALLBACK_KEYBOXES="Yuri/8"
 
@@ -41,7 +43,7 @@ FALLBACK_KEYBOXES="Yuri/8"
 
 # -- Package lists --
 GMS_APPS="com.android.vending com.google.android.gsf com.google.android.gms com.google.android.contactkeys com.google.android.ims com.google.android.safetycore com.google.android.apps.walletnfcrel com.google.android.apps.nbu.paisa.user"
-FIXED_TARGETS="android $GMS_APPS"
+FIXED_TARGETS="$GMS_APPS"
 GMS_KILL_LIST="$GMS_APPS com.google.android.gms.persistent com.google.android.gms.unstable com.google.android.rkpdapp com.android.chrome com.google.android.googlequicksearchbox"
 TOOL_APPS="bin.mt.plus bin.mt.plus.canary com.omarea.vtools moe.shizuku.privileged.api com.estrongs.android.pop com.coolapk.market com.sevtinge.hyperceiler com.coderstory.toolkit"
 
@@ -72,6 +74,7 @@ cfg_set() {
 # gms_clear_data:0 — pm clear wipes Play purchase/login (biometric prompt on next open).
 SPECTER_TOGGLE_DEFAULTS="
 toggle_prop_handler:1 toggle_boot_state_props:1 toggle_bootmode_spoof:1
+toggle_boot_hash:1
 toggle_adb_disabler:0
 toggle_adb_disabler_dev_options:1 toggle_adb_disabler_usb_debug:1
 toggle_adb_disabler_oem_unlock:1
@@ -81,14 +84,15 @@ toggle_rom_fingerprint_names:1 toggle_rom_fingerprint_prefix:1
 toggle_rom_fingerprint_build_type:1
 toggle_action_gms:1 toggle_action_target:1
 toggle_action_security_patch:0 toggle_action_pif:1 toggle_action_keybox:1
-toggle_action_hma:1
+toggle_action_hma:0
 toggle_action_force_target:0
 toggle_action_force_hma:0
+toggle_action_force_keybox:0
 toggle_action_security_patch_device:1 toggle_action_security_patch_bulletin:1
 toggle_action_security_patch_synthetic:1
 toggle_action_gms_force_stop:1 toggle_action_gms_clear_data:0
-toggle_hma_target_user_apps:1 toggle_hma_live_reload:1 toggle_auto_hma:1
-toggle_auto_target:1 toggle_keybox_info:1 toggle_autopif:0 toggle_autokeybox:0
+toggle_auto_hma:0
+toggle_auto_target:1 toggle_keybox_info:1 toggle_keybox_auto_replace:0 toggle_autopif:0
 "
 
 _apply_toggle_defaults() {
@@ -107,7 +111,15 @@ _apply_toggle_defaults() {
 # -- Utilities --
 ensure_dir() { mkdir -p "$1" 2>/dev/null; }
 
-_escape_json() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+_escape_json() {
+  # mksh parameter expansion avoids one sed process per JSON field; on-device
+  # process spawn is far more expensive than the substitution itself.
+  _ej_val=$1
+  _ej_val=${_ej_val//\\/\\\\}
+  _ej_val=${_ej_val//\"/\\\"}
+  printf '%s' "$_ej_val"
+  unset _ej_val
+}
 
 version_ge() {
   _v_a="$1" _v_b="$2"

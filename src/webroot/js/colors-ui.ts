@@ -1,15 +1,15 @@
-import { getTranslation } from './i18n.js';
+import { t } from './i18n.js';
 import { cfgGet, cfgSet } from './cfg.js';
 import { applyPreset, getCurrentPreset, PRESETS } from './theme.js';
 import { openSubPage } from './subpage.js';
+import { wireRowActivation } from './utils.js';
 
-const t = (key: string, fallback: string): string => getTranslation(key) || fallback;
 
 const BASIC_COLORS: { id: string; nameKey: string; defaultName: string; hex: string }[] = [
   { id: 'blue',   nameKey: 'theme_preset_blue',   defaultName: 'Blue',   hex: '#1157CE' },
   { id: 'cyan',   nameKey: 'theme_preset_cyan',   defaultName: 'Cyan',   hex: '#00687C' },
   { id: 'green',  nameKey: 'theme_preset_green',  defaultName: 'Green',  hex: '#006C35' },
-  { id: 'yellow', nameKey: 'theme_preset_yellow', defaultName: 'Yellow', hex: '#8F4E06' },
+  { id: 'yellow', nameKey: 'theme_preset_yellow', defaultName: 'Yellow', hex: '#be9108' },
   { id: 'orange', nameKey: 'theme_preset_orange', defaultName: 'Orange', hex: '#9A4600' },
   { id: 'red',    nameKey: 'theme_preset_red',    defaultName: 'Red',    hex: '#B3251E' },
   { id: 'pink',   nameKey: 'theme_preset_pink',   defaultName: 'Pink',   hex: '#B60D6E' },
@@ -33,7 +33,7 @@ export function updateColorsSummary() {
 
   if (dotEl) {
     if (current === 'monet') {
-      dotEl.style.background = 'linear-gradient(135deg, #1157CE 25%, #8F4E06 50%, #B3251E 75%, #7438D2 100%)';
+      dotEl.style.background = 'linear-gradient(135deg, #1157CE 25%, #be9108 50%, #B3251E 75%, #7438D2 100%)';
     } else {
       dotEl.style.background = PRESETS[current] || 'var(--md-sys-color-primary)';
     }
@@ -66,7 +66,7 @@ export async function openColorsDialog() {
             type: 'custom',
             render: (host: HTMLElement) => {
               host.innerHTML = `
-                <div class="colors-preview-showcase" id="colors-live-preview" aria-hidden="true">
+                <div class="colors-preview-showcase" id="colors-live-preview" aria-hidden="true" inert>
                   <div class="phone-frame-wrapper">
                     <!-- Hardware side buttons (Pixel style: power on top, volume below) -->
                     <div class="phone-hw-btn phone-hw-btn--pwr" aria-hidden="true"></div>
@@ -94,67 +94,51 @@ export async function openColorsDialog() {
 
                           <!-- Section 1: Boot Behavior -->
                           <h2 class="list-title">${t('control_boot_title', 'Boot Behavior')}</h2>
-                          <div class="list-container">
+                          <sp-settings-section>
                             <!-- 1. Boot Spoofing -->
-                            <div class="list-item list-item--toggle list-item--primary">
-                              <div class="li-icon"><md-icon aria-hidden="true">lock</md-icon></div>
-                              <div class="list-item-content">
-                                <div class="toggle-text">${t('control_toggle_prop_handler', 'Boot Spoofing')}</div>
-                                <span class="supporting-text">${t('preview_toggle_boot_desc', 'Spoof bootloader & state')}</span>
-                              </div>
-                              <div class="li-toggle-action">
-                                <svg class="li-config-chevron" viewBox="0 0 8 14" width="8" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 2L6.5 7L1.5 12"/></svg>
-                                <div class="li-config-divider" aria-hidden="true"></div>
-                                <md-switch icons selected aria-label="${t('control_toggle_prop_handler', 'Boot Spoofing')}"></md-switch>
-                              </div>
-                            </div>
+                            <sp-settings-row variant="toggle" has-page>
+                              <md-icon slot="icon" aria-hidden="true">lock</md-icon>
+                              <span slot="headline">${t('control_toggle_prop_handler', 'Boot Spoofing')}</span>
+                              <span slot="supporting" class="supporting-text">${t('preview_toggle_boot_desc', 'Spoof bootloader & state')}</span>
+                              <button type="button" slot="trailing" class="li-config-btn" data-config aria-label="${t('control_toggle_prop_handler', 'Boot Spoofing')}"><svg class="li-config-chevron" viewBox="0 0 8 14" width="8" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 2L6.5 7L1.5 12"/></svg></button>
+                              <div class="li-config-divider" slot="trailing" aria-hidden="true"></div>
+                              <md-switch slot="trailing" icons selected aria-label="${t('control_toggle_prop_handler', 'Boot Spoofing')}"></md-switch>
+                            </sp-settings-row>
 
                             <!-- 2. ROM Cleaner -->
-                            <div class="list-item list-item--toggle list-item--secondary">
-                              <div class="li-icon"><md-icon aria-hidden="true">fingerprint</md-icon></div>
-                              <div class="list-item-content">
-                                <div class="toggle-text">${t('control_toggle_rom_fingerprint', 'ROM Cleaner')}</div>
-                                <span class="supporting-text">${t('preview_toggle_rom_desc', 'Strip custom ROM traces')}</span>
-                              </div>
-                              <div class="li-toggle-action">
-                                <svg class="li-config-chevron" viewBox="0 0 8 14" width="8" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 2L6.5 7L1.5 12"/></svg>
-                                <div class="li-config-divider" aria-hidden="true"></div>
-                                <md-switch icons selected aria-label="${t('control_toggle_rom_fingerprint', 'ROM Cleaner')}"></md-switch>
-                              </div>
-                            </div>
+                            <sp-settings-row variant="toggle" has-page class="mock-row--secondary">
+                              <md-icon slot="icon" aria-hidden="true">fingerprint</md-icon>
+                              <span slot="headline">${t('control_toggle_rom_fingerprint', 'ROM Cleaner')}</span>
+                              <span slot="supporting" class="supporting-text">${t('preview_toggle_rom_desc', 'Strip custom ROM traces')}</span>
+                              <button type="button" slot="trailing" class="li-config-btn" data-config aria-label="${t('control_toggle_rom_fingerprint', 'ROM Cleaner')}"><svg class="li-config-chevron" viewBox="0 0 8 14" width="8" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 2L6.5 7L1.5 12"/></svg></button>
+                              <div class="li-config-divider" slot="trailing" aria-hidden="true"></div>
+                              <md-switch slot="trailing" icons selected aria-label="${t('control_toggle_rom_fingerprint', 'ROM Cleaner')}"></md-switch>
+                            </sp-settings-row>
 
                             <!-- 3. ADB Lock -->
-                            <div class="list-item list-item--toggle list-item--tertiary">
-                              <div class="li-icon"><md-icon aria-hidden="true">usb_off</md-icon></div>
-                              <div class="list-item-content">
-                                <div class="toggle-text">${t('control_toggle_adb_disabler', 'ADB Lock')}</div>
-                                <span class="supporting-text">${t('preview_toggle_adb_desc', 'Lock down ADB & debugging')}</span>
-                              </div>
-                              <div class="li-toggle-action">
-                                <svg class="li-config-chevron" viewBox="0 0 8 14" width="8" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 2L6.5 7L1.5 12"/></svg>
-                                <div class="li-config-divider" aria-hidden="true"></div>
-                                <md-switch icons aria-label="${t('control_toggle_adb_disabler', 'ADB Lock')}"></md-switch>
-                              </div>
-                            </div>
-                          </div>
+                            <sp-settings-row variant="toggle" has-page class="mock-row--tertiary">
+                              <md-icon slot="icon" aria-hidden="true">usb_off</md-icon>
+                              <span slot="headline">${t('control_toggle_adb_disabler', 'ADB Lock')}</span>
+                              <span slot="supporting" class="supporting-text">${t('preview_toggle_adb_desc', 'Lock down ADB & debugging')}</span>
+                              <button type="button" slot="trailing" class="li-config-btn" data-config aria-label="${t('control_toggle_adb_disabler', 'ADB Lock')}"><svg class="li-config-chevron" viewBox="0 0 8 14" width="8" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 2L6.5 7L1.5 12"/></svg></button>
+                              <div class="li-config-divider" slot="trailing" aria-hidden="true"></div>
+                              <md-switch slot="trailing" icons aria-label="${t('control_toggle_adb_disabler', 'ADB Lock')}"></md-switch>
+                            </sp-settings-row>
+                          </sp-settings-section>
 
                           <!-- Section 2: Background Jobs -->
                           <h2 class="list-title">${t('control_background_title', 'Background Jobs')}</h2>
-                          <div class="list-container">
+                          <sp-settings-section>
                             <!-- 4. Auto-Targeting -->
-                            <div class="list-item list-item--toggle list-item--primary">
-                              <div class="li-icon"><md-icon aria-hidden="true">my_location</md-icon></div>
-                              <div class="list-item-content">
-                                <div class="toggle-text">${t('control_toggle_auto_target', 'Auto-Targeting')}</div>
-                                <span class="supporting-text">${t('preview_toggle_auto_target_desc', 'Auto-target new applications')}</span>
-                              </div>
-                              <div class="li-toggle-action">
-                                <svg class="li-config-chevron" viewBox="0 0 8 14" width="8" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 2L6.5 7L1.5 12"/></svg>
-                                <div class="li-config-divider" aria-hidden="true"></div>
-                                <md-switch icons selected aria-label="${t('control_toggle_auto_target', 'Auto-Targeting')}"></md-switch>
-                              </div>
-                            </div>
-                          </div>
+                            <sp-settings-row variant="toggle" has-page>
+                              <md-icon slot="icon" aria-hidden="true">my_location</md-icon>
+                              <span slot="headline">${t('control_toggle_auto_target', 'Auto-Targeting')}</span>
+                              <span slot="supporting" class="supporting-text">${t('preview_toggle_auto_target_desc', 'Auto-target new applications')}</span>
+                              <button type="button" slot="trailing" class="li-config-btn" data-config aria-label="${t('control_toggle_auto_target', 'Auto-Targeting')}"><svg class="li-config-chevron" viewBox="0 0 8 14" width="8" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 2L6.5 7L1.5 12"/></svg></button>
+                              <div class="li-config-divider" slot="trailing" aria-hidden="true"></div>
+                              <md-switch slot="trailing" icons selected aria-label="${t('control_toggle_auto_target', 'Auto-Targeting')}"></md-switch>
+                            </sp-settings-row>
+                          </sp-settings-section>
 
                         </div>
                       </div>
@@ -162,16 +146,6 @@ export async function openColorsDialog() {
                   </div>
                 </div>
               `;
-
-              // Interactive phone preview items (toggle switches on click)
-              host.querySelectorAll('.phone-mockup .list-item').forEach(item => {
-                item.addEventListener('click', (e) => {
-                  const sw = item.querySelector('md-switch') as MdSwitch | null;
-                  if (sw && e.target !== sw && !sw.contains(e.target as Node)) {
-                    sw.selected = !sw.selected;
-                  }
-                });
-              });
             }
           }
         ]
@@ -285,9 +259,7 @@ export async function openColorsDialog() {
 export function wireColorsUI() {
   const row = document.getElementById('color-theme-row');
   if (row) {
-    row.addEventListener('click', () => {
-      openColorsDialog().catch(console.error);
-    });
+    wireRowActivation(row, () => { openColorsDialog().catch(console.error); });
   }
 
   document.addEventListener('languageChanged', () => {

@@ -30,6 +30,7 @@ _first_boot=0
 [ -f "$SPECTER_DIR/.first_boot_pending" ] && _first_boot=1
 _force_target=$(cfg_get toggle_action_force_target 0)
 _force_hma=$(cfg_get toggle_action_force_hma 0)
+_force_keybox=$(cfg_get toggle_action_force_keybox 0)
 
 # The action is intentionally non-interactive. Volume-key prompts blocked the
 # WebUI for 10/7 seconds; setup choices live in the WebUI settings instead.
@@ -65,7 +66,12 @@ _force_hma=$(cfg_get toggle_action_force_hma 0)
   _feature_should_run "keybox" && {
     log_u "ACTION" ""
     log_u "ACTION" "-> Keybox:"
-    sh "$MODDIR/features/keybox.sh" --if-needed || true
+    if [ "$_force_keybox" = "1" ]; then
+      log_i "ACTION" "Always install keybox enabled, bypassing healthy check"
+      sh "$MODDIR/features/keybox.sh" || true
+    else
+      sh "$MODDIR/features/keybox.sh" --if-needed || true
+    fi
   }
 
   if _feature_should_run "pif"; then
@@ -96,50 +102,36 @@ _force_hma=$(cfg_get toggle_action_force_hma 0)
     fi
   fi
 
-  if _feature_should_run "hma"; then
+  if _feature_should_run "hma" 0; then
     log_u "ACTION" ""
     log_u "ACTION" "-> HMA-OSS Config:"
     _hma_config_ok=0
     for _hma_config in "$HMAOSS_BASE"/hide_my_applist*/config.json; do
       [ -s "$_hma_config" ] && { _hma_config_ok=1; break; }
     done
-    if [ "$_first_boot" = "1" ] || [ "$_force_hma" = "1" ] || [ "$_hma_config_ok" != "1" ] || [ "$(cfg_get toggle_auto_hma 1)" != "1" ]; then
+    if [ "$_first_boot" = "1" ] || [ "$_force_hma" = "1" ] || [ "$_hma_config_ok" != "1" ] || [ "$(cfg_get toggle_auto_hma 0)" != "1" ]; then
       [ "$_hma_config_ok" != "1" ] && log_w "ACTION" "HMA config missing, regenerating"
-      SPECTER_HMA_NO_UI_RELOAD=1 sh "$MODDIR/features/hma.sh" || true
-
-      _hma_policy=$(_hma_launch_policy)
-      _do_launch=0
-
-      if [ "$_first_boot" = "1" ]; then
-        log_u "ACTION" "HMA-OSS launch skipped on first boot"
-      elif [ "$_hma_policy" = "open" ]; then
-        log_u "ACTION" "Auto-launching HMA-OSS (policy: auto-accept)..."
-        _do_launch=1
-      elif [ "$_hma_policy" = "skip" ]; then
-        log_u "ACTION" "HMA-OSS launch skipped (policy: auto-refuse)"
-        log_u "ACTION" "Config written; reboot or open HMA-OSS to apply"
-      else
-        log_u "ACTION" "Config written; open HMA-OSS or reboot to apply"
-      fi
-
-      if [ "$_do_launch" = "1" ]; then
-        if [ "$(cfg_get toggle_hma_live_reload 1)" = "1" ]; then
-          _hma_request_reload /data/local/tmp || _hma_open_ui || true
-        else
-          _hma_open_ui || true
-        fi
-      fi
-      unset _hma_policy _do_launch
+      sh "$MODDIR/features/hma.sh" || true
+      log_u "ACTION" "HMA-OSS configuration complete"
     else
       log_i "ACTION" "Auto-HMA is enabled, skipping HMA generation"
     fi
     unset _hma_config _hma_config_ok
   fi
-  unset _force_target _force_hma
+  unset _force_target _force_hma _force_keybox
 
   run_device_info "$MODDIR"
   sh "$MODDIR/features/keybox_info.sh" --if-needed >/dev/null 2>&1 || true
   sh "$MODDIR/features/keystore_info.sh" >/dev/null 2>&1 || true
+  sh "$MODDIR/features/modules_state.sh" >/dev/null 2>&1 || true
+  write_webui_state
+  # Build the setup snapshot in a detached background process; the WebUI
+  # serves the previous copy immediately and replaces it when this finishes.
+  if command -v setsid >/dev/null 2>&1; then
+    setsid sh "$MODDIR/features/setup_info.sh" >/dev/null 2>&1 &
+  else
+    sh "$MODDIR/features/setup_info.sh" >/dev/null 2>&1 &
+  fi
 
   [ -f "$MODDIR/module.prop.bak" ] && cp "$MODDIR/module.prop.bak" "$MODDIR/module.prop"
   . "$MODDIR/lib/desc.sh"

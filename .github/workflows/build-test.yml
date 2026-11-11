@@ -11,14 +11,14 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with: { node-version: 22 }
 
       - name: Cache npm
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.npm
           key: npm-${{ hashFiles('package-lock.json') }}
@@ -35,6 +35,9 @@ jobs:
         with:
           scandir: src
           severity: warning
+          # Pin the release: the action's default "stable" alias points at a
+          # moving target and its download broke the run on 2026-11-08.
+          version: "v0.11.0"
 
       - name: Run shell tests
         run: bash tests/run.sh
@@ -84,7 +87,7 @@ jobs:
           echo "artifact_name=Specter-${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Upload ci module as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.get_name.outputs.artifact_name }}
           path: Module/
@@ -92,19 +95,110 @@ jobs:
 
       - name: Send CI build to Telegram
         if: github.repository == 'dpejoh/specter' && github.event_name != 'pull_request'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GITHUB_EVENT: ${{ toJson(github.event) }}
+          BRANCH: ${{ github.ref_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          CI_COUNT: ${{ github.run_number }}
         run: |
-          COMMIT_MSG=$(git log -1 --pretty=%s | sed 's/`/'"'"'/g')
-          COMMIT_URL="https://github.com/${{ github.repository }}/commit/${{ github.sha }}"
-          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          CAPTION=$(printf '```\n%s\n```\n[Commit](%s)\n[Workflow run](%s)' "$COMMIT_MSG" "$COMMIT_URL" "$RUN_URL")
-          HTTP_CODE=$(curl -s -o response.json -w "%{http_code}" \
-            -F chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
-            -F document=@"${{ steps.get_name.outputs.artifact_name }}.zip" \
-            -F caption="$CAPTION" \
-            -F parse_mode="Markdown" \
-            "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendDocument")
-          cat response.json
+          set -euo pipefail
+
+          if [ -z "${TELEGRAM_BOT_TOKEN}" ] || [ -z "${TELEGRAM_CHAT_ID}" ]; then
+            echo "Missing Telegram secrets. Configure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in repo secrets." >&2
+            exit 0
+          fi
+
+          CAPTION=$(python3 - <<'PY'
+          import json, os
+
+          def escape_html(s):
+              return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+          event = json.loads(os.environ.get("GITHUB_EVENT", "{}"))
+          branch = os.environ.get("BRANCH", "main")
+          run_url = os.environ.get("RUN_URL", "")
+          ci_count = os.environ.get("CI_COUNT", "")
+          repo = os.environ.get("REPO", "")
+          sha = os.environ.get("SHA", "")
+          actor = os.environ.get("ACTOR", "")
+
+          commits = event.get("commits", [])
+          if commits:
+              commit_lines = []
+              i = len(commits)
+              for c in reversed(commits):
+                  msg = c.get("message", "").split("\n")[0].strip()
+                  if len(msg) > 100:
+                      msg = msg[:97] + "..."
+                  author = (
+                      c.get("author", {}).get("username")
+                      or c.get("author", {}).get("name")
+                      or actor
+                  )
+                  line = f"{escape_html(msg)} by {escape_html(author)}"
+                  if len(line) + 1 + sum(len(x) + 1 for x in commit_lines) > 600:
+                      commit_lines.append(f"(other {i} commits)")
+                      break
+                  commit_lines.append(line)
+                  i -= 1
+              commit_text = "\n".join(reversed(commit_lines))
+          else:
+              head = event.get("head_commit") or {}
+              msg = head.get("message", "").split("\n")[0].strip()
+              if not msg:
+                  import subprocess
+                  msg = subprocess.check_output(["git", "log", "-1", "--pretty=%s"]).decode().strip()
+              if len(msg) > 100:
+                  msg = msg[:97] + "..."
+              author = (
+                  head.get("author", {}).get("username")
+                  or head.get("author", {}).get("name")
+                  or actor
+              )
+              commit_text = f"{escape_html(msg)} by {escape_html(author)}"
+
+          compare_url = event.get("compare")
+          if compare_url:
+              diff_line = f'<a href="{escape_html(compare_url)}">Compare</a>'
+          else:
+              diff_line = f'<a href="https://github.com/{repo}/commit/{sha}">Commit</a>'
+
+          caption_lines = [
+              "<b>Specter</b>",
+              f"Branch: {escape_html(branch)}",
+              f"#ci_{ci_count}",
+              f"<pre>{commit_text}</pre>",
+              diff_line,
+              f'<a href="{escape_html(run_url)}">Workflow run</a>',
+          ]
+          caption = "\n".join(caption_lines)
+
+          if len(caption) > 1024:
+              caption = caption[:1021].rstrip() + "..."
+
+          print(caption)
+          PY
+          )
+
+          MODULE_ZIP=$(ls Specter-*.zip 2>/dev/null | head -n 1 || true)
+          if [ -z "${MODULE_ZIP}" ] || [ ! -f "${MODULE_ZIP}" ]; then
+            MODULE_ZIP="${{ steps.get_name.outputs.artifact_name }}.zip"
+          fi
+
+          response_file=$(mktemp)
+          HTTP_CODE=$(curl --silent --show-error --output "${response_file}" --write-out "%{http_code}" \
+            -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
+            -F "chat_id=${TELEGRAM_CHAT_ID}" \
+            -F "document=@${MODULE_ZIP}" \
+            -F "parse_mode=HTML" \
+            --form-string "caption=${CAPTION}")
+          cat "${response_file}"
           if [ "$HTTP_CODE" != "200" ]; then
-            echo "Telegram send failed (HTTP $HTTP_CODE)"
+            echo "Telegram send failed (HTTP $HTTP_CODE)" >&2
             exit 1
           fi

@@ -1,13 +1,114 @@
 # shellcheck shell=sh
 # Alphabet variables are defined in decode.sh (sourced via common.sh)
 
+# Report validity of every PEM certificate in a keybox. Android does not
+# consistently provide openssl, so read the X.509 DER validity fields with
+# standard shell tools. Unknown or malformed certificates fail closed.
+# Self-signed (root) certificates are trust anchors: verifiers do not gate
+# on their dates, so an expired root does not condemn the chain.
+keybox_cert_validity() {
+  (
+    _kv_tmp="${SPECTER_DIR:-/data/adb/specter}/tmp"
+    mkdir -p "$_kv_tmp" 2>/dev/null || { echo unknown; exit; }
+    chmod 700 "$_kv_tmp" 2>/dev/null || true
+    _kv_dir=$(mktemp -d "$_kv_tmp/specter-cert.XXXXXX") || { echo unknown; exit; }
+    trap 'rm -rf "$_kv_dir"; rm -f "$_kv_dir.der" "$_kv_dir.res"' EXIT
+    # Keybox XML may be minified, with PEM markers sharing a line with tags
+    # or with each other; isolate every marker on its own line first.
+    sed 's/-----BEGIN CERTIFICATE-----/\n-----BEGIN CERTIFICATE-----\n/g; s/-----END CERTIFICATE-----/\n-----END CERTIFICATE-----\n/g' "$1" \
+    | awk -v dir="$_kv_dir" '
+      /-----BEGIN CERTIFICATE-----/ { if (inside) { bad=1; exit } inside=1; n++; next }
+      /-----END CERTIFICATE-----/ { if (!inside) { bad=1; exit } close(dir "/" n); inside=0; next }
+      inside { gsub(/[[:space:]]/, ""); print > (dir "/" n) }
+      END { if (bad || inside || !n) exit 1 }
+    ' || { echo unknown; exit; }
+    _kv_now=${2:-$(date -u +%Y%m%d%H%M%S 2>/dev/null)}
+    case "$_kv_now" in *[!0-9]*|"") echo unknown; exit ;; esac
+    _kv_result=valid
+    : > "$_kv_dir.res"
+    for _kv_file in "$_kv_dir"/*; do
+      base64 -d < "$_kv_file" > "$_kv_dir.der" 2>/dev/null || { _kv_result=unknown; break; }
+      _kv_status=$(od -An -v -tx1 "$_kv_dir.der" | tr -d ' \n' | awk -v now="$_kv_now" '
+        function byte(p) { return index("0123456789abcdef", substr(hex,p,1))-1 }
+        function number(p) { return byte(p)*16+byte(p+1) }
+        function tlv(p, limit,  len,n,i) {
+          if (p+3>limit || byte(p)<0 || byte(p+1)<0) return 0
+          tag=substr(hex,p,2); len=number(p+2); p+=4
+          if (len>=128) {
+            n=len-128; if (n<1 || n>4 || p+n*2-1>limit) return 0
+            len=0; for (i=0;i<n;i++) len=len*256+number(p+i*2); p+=n*2
+          }
+          start=p; end=p+len*2-1; nextpos=end+1
+          return end<=limit
+        }
+        function xtime(p,e,  s,i,c,y) {
+          s=""; for (i=p;i<=e;i+=2) { c=number(i); if(c<0 || c>127) return ""; s=s sprintf("%c",c) }
+          if (tag=="17" && s ~ /^[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]Z$/) {
+            y=substr(s,1,2)+0; return (y>=50 ? "19" : "20") substr(s,1,12)
+          }
+          if (tag=="18" && s ~ /^[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]Z$/) return substr(s,1,14)
+          return ""
+        }
+        { hex=tolower($0); limit=length(hex)
+          if (!tlv(1,limit) || tag!="30" || nextpos!=limit+1) exit 1
+          if (!tlv(start,end) || tag!="30") exit 1
+          tbsend=end; p=start
+          if (!tlv(p,tbsend)) exit 1
+          if (tag=="a0") { p=nextpos; if (!tlv(p,tbsend)) exit 1 }
+          if (tag!="02") exit 1
+          p=nextpos; if (!tlv(p,tbsend) || tag!="30") exit 1
+          p=nextpos; ip=p; if (!tlv(p,tbsend) || tag!="30") exit 1
+          issuer=substr(hex,ip,nextpos-ip)
+          p=nextpos; if (!tlv(p,tbsend) || tag!="30") exit 1
+          vnext=nextpos; vend=end; p=start
+          if (!tlv(p,vend)) exit 1; before=xtime(start,end); p=nextpos
+          if (!tlv(p,vend)) exit 1; after=xtime(start,end)
+          if (before=="" || after=="" || before>after) exit 1
+          p=vnext; sp=p; if (!tlv(p,tbsend) || tag!="30") exit 1
+          subject=substr(hex,sp,nextpos-sp)
+          if (now<before) _st="not_yet_valid"; else if (now>after) _st="expired"; else _st="valid"
+          print _st "|" issuer "|" subject
+        }
+      ') || _kv_status=unknown
+      case "$_kv_status" in
+        valid\|*|expired\|*|not_yet_valid\|*) printf '%s\n' "$_kv_status" >> "$_kv_dir.res" ;;
+        *) _kv_result=unknown; break ;;
+      esac
+    done
+    if [ "$_kv_result" = "valid" ]; then
+      # First out-of-date certificate wins, except a self-signed root that
+      # actually anchors another certificate in the file: trust anchors are
+      # not date-gated by verifiers, so its dates are ignored.
+      _kv_result=$(awk -F'|' '
+        { cst[NR]=$1; cis[NR]=$2; csb[NR]=$3 }
+        END {
+          for (i=1; i<=NR; i++) {
+            if (cst[i]=="valid") continue
+            if (cis[i]==csb[i]) {
+              anchored=0
+              for (j=1; j<=NR; j++) if (j!=i && cis[j]==csb[i]) anchored=1
+              if (anchored) continue
+            }
+            print cst[i]; exit
+          }
+          print "valid"
+        }' "$_kv_dir.res")
+    fi
+    rm -f "$_kv_dir.der" "$_kv_dir.res"
+    echo "$_kv_result"
+  )
+}
+
 decode_keybox_blob() {
   _dkb_in="$1" _dkb_out="$2"
-  _dkb_tmp="${SPECTER_TMP_DIR:-/data/local/tmp}/_dkb_$$.tmp"
+  _dkb_tmp_dir="${SPECTER_TMP_DIR:-${SPECTER_DIR:-/data/adb/specter}/tmp}"
+  mkdir -p "$_dkb_tmp_dir" 2>/dev/null || return 1
+  chmod 700 "$_dkb_tmp_dir" 2>/dev/null || true
+  _dkb_tmp="$_dkb_tmp_dir/_dkb_$$.tmp"
   decode_substitution "$_dkb_in" "$_dkb_tmp" 2>/dev/null || { rm -f "$_dkb_tmp"; return 1; }
   base64 -d < "$_dkb_tmp" > "$_dkb_out" 2>/dev/null || { rm -f "$_dkb_tmp"; return 1; }
   rm -f "$_dkb_tmp"
-  unset _dkb_in _dkb_out _dkb_tmp
+  unset _dkb_in _dkb_out _dkb_tmp _dkb_tmp_dir
 }
 
 # shellcheck disable=SC3057,SC3052
@@ -86,7 +187,9 @@ hex_to_dec() {
 # action pipeline; a short cache keeps them from downloading it twice.
 keybox_catalog() {
   _kc_cache="$SPECTER_DIR/cache/keybox_catalog.json"
-  _kc_ttl="${KEYBOX_CATALOG_TTL:-300}"
+  # Providers/softbans move slowly; Google revocation is checked separately.
+  # An app-open --fresh check bypasses this cache.
+  _kc_ttl="${KEYBOX_CATALOG_TTL:-1800}"
   if [ -s "$_kc_cache" ]; then
     _kc_age=$(( $(date +%s) - $(stat -c %Y "$_kc_cache" 2>/dev/null || echo 0) ))
     if [ "$_kc_age" -ge 0 ] && [ "$_kc_age" -lt "$_kc_ttl" ]; then
@@ -95,48 +198,104 @@ keybox_catalog() {
       return 0
     fi
   fi
-  _kc_json=$(download "$CATALOG_URL" 2>/dev/null) || _kc_json=""
+  _kc_json=""
+  for _kc_url in "$CATALOG_URL" "$CATALOG_URL_FALLBACK"; do
+    [ -n "$_kc_url" ] || continue
+    _kc_try=$(download "$_kc_url") || _kc_try=""
+    case "$_kc_try" in
+      *'"entries"'*) _kc_json="$_kc_try"; break ;;
+    esac
+  done
+
   if [ -n "$_kc_json" ]; then
     ensure_dir "$SPECTER_DIR/cache"
     printf '%s' "$_kc_json" > "$_kc_cache" 2>/dev/null || true
     printf '%s' "$_kc_json"
-    unset _kc_cache _kc_ttl _kc_age _kc_json
+    unset _kc_cache _kc_ttl _kc_age _kc_json _kc_url _kc_try
     return 0
   fi
-  unset _kc_cache _kc_ttl _kc_age _kc_json
+
+  # A valid stale catalog is better than an outage: never overwrite the cache
+  # with an error body, and keep serving the last known good copy.
+  if [ -s "$_kc_cache" ] && grep -q '"entries"' "$_kc_cache" 2>/dev/null; then
+    cat "$_kc_cache"
+    unset _kc_cache _kc_ttl _kc_age _kc_json _kc_url _kc_try
+    return 0
+  fi
+
+  unset _kc_cache _kc_ttl _kc_age _kc_json _kc_url _kc_try
   return 1
 }
 
-check_google_revocation() {
-  _gr_serial=$1
-  _gr_cache="$SPECTER_DIR/cache/google_revocation.json"
-  _gr_ttl="${GOOGLE_REVOCATION_TTL:-3600}"
-  _gr_file=""
-  if [ -s "$_gr_cache" ]; then
-    _gr_age=$(( $(date +%s) - $(stat -c %Y "$_gr_cache" 2>/dev/null || echo 0) ))
-    if [ "$_gr_age" -ge 0 ] && [ "$_gr_age" -lt "$_gr_ttl" ]; then
-      _gr_file="$_gr_cache"
+# True when the catalog cache is still within its TTL, so callers can skip a
+# network probe before reusing it.
+keybox_catalog_fresh() {
+  _kcf_cache="$SPECTER_DIR/cache/keybox_catalog.json"
+  _kcf_ttl="${KEYBOX_CATALOG_TTL:-300}"
+  [ -s "$_kcf_cache" ] || { unset _kcf_cache _kcf_ttl; return 1; }
+  _kcf_age=$(( $(date +%s) - $(stat -c %Y "$_kcf_cache" 2>/dev/null || echo 0) ))
+  if [ "$_kcf_age" -ge 0 ] && [ "$_kcf_age" -lt "$_kcf_ttl" ]; then
+    unset _kcf_cache _kcf_ttl _kcf_age
+    return 0
+  fi
+  unset _kcf_cache _kcf_ttl _kcf_age
+  return 1
+}
+
+# Print the path to a fresh (or newly downloaded) Google revocation cache.
+_google_revocation_cache_file() {
+  _grc_cache="$SPECTER_DIR/cache/google_revocation.json"
+  _grc_ttl="${GOOGLE_REVOCATION_TTL:-3600}"
+  _grc_file=""
+  if [ -s "$_grc_cache" ]; then
+    _grc_age=$(( $(date +%s) - $(stat -c %Y "$_grc_cache" 2>/dev/null || echo 0) ))
+    if [ "$_grc_age" -ge 0 ] && [ "$_grc_age" -lt "$_grc_ttl" ]; then
+      _grc_file="$_grc_cache"
     fi
   fi
-  if [ -z "$_gr_file" ]; then
-    _gr_resp=$(download "$GOOGLE_REVOCATION_URL" 2>/dev/null) || _gr_resp=""
-    if [ -n "$_gr_resp" ]; then
+  if [ -z "$_grc_file" ]; then
+    _grc_resp=$(download "$GOOGLE_REVOCATION_URL") || _grc_resp=""
+    if [ -n "$_grc_resp" ]; then
       ensure_dir "$SPECTER_DIR/cache"
-      cat > "$_gr_cache" <<EOF
-$_gr_resp
+      cat > "$_grc_cache" <<EOF
+$_grc_resp
 EOF
-      _gr_file="$_gr_cache"
+      _grc_file="$_grc_cache"
     fi
   fi
-  if [ -z "$_gr_file" ] || ! grep -q '"entries"' "$_gr_file"; then
-    unset _gr_serial _gr_cache _gr_ttl _gr_file _gr_resp _gr_age
+  [ -n "$_grc_file" ] && grep -q '"entries"' "$_grc_file" 2>/dev/null && printf '%s\n' "$_grc_file"
+  unset _grc_cache _grc_ttl _grc_file _grc_resp _grc_age
+}
+
+# Print "STATUS|REASON" for a certificate serial, or nothing when not listed.
+# Google lists serials in string form (the hex string for RKP keys, the digit
+# string the serial spells for classic keys); a few are listed by decimal
+# integer value instead. Try the serial as given first, then its decimal form.
+google_revocation_info() {
+  _gri_file=$(_google_revocation_cache_file 2>/dev/null || true)
+  [ -n "$_gri_file" ] || return 1
+  _gri_dec=$(hex_to_dec "$1")
+  _gri_obj=""
+  for _gri_key in "$1" "$_gri_dec"; do
+    [ -n "$_gri_key" ] || continue
+    _gri_obj=$(tr -d '\n\r' < "$_gri_file" 2>/dev/null \
+      | grep -o "\"$_gri_key\"[[:space:]]*:[[:space:]]*{[^}]*}" 2>/dev/null \
+      | head -1 || true)
+    [ -n "$_gri_obj" ] && break
+  done
+  if [ -z "$_gri_obj" ]; then
+    unset _gri_file _gri_dec _gri_key _gri_obj
     return 1
   fi
-  _gr_dec=$(hex_to_dec "$_gr_serial")
-  _gr_rc=1
-  grep -Fq "\"$_gr_dec\"" "$_gr_file" && _gr_rc=0
-  unset _gr_serial _gr_cache _gr_ttl _gr_file _gr_resp _gr_age _gr_dec
-  return $_gr_rc
+  _gri_status=$(printf '%s' "$_gri_obj" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  [ -n "$_gri_status" ] || { unset _gri_file _gri_dec _gri_obj _gri_status; return 1; }
+  _gri_reason=$(printf '%s' "$_gri_obj" | sed -n 's/.*"reason"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  printf '%s|%s\n' "$_gri_status" "$_gri_reason"
+  unset _gri_file _gri_dec _gri_key _gri_obj _gri_status _gri_reason
+}
+
+check_google_revocation() {
+  [ -n "$(google_revocation_info "$1")" ]
 }
 
 find_kmInstallKeybox() {
@@ -155,6 +314,84 @@ find_kmInstallKeybox() {
 # True if catalog entry for SOURCE/VERSION is softbanned.
 keybox_is_softbanned() {
   echo "$1" | grep -o '"entries":\[[^]]*\]' | grep -o '{[^}]*"source":"'"$2"'"[^}]*"version":"'"$3"'"[^}]*}' | head -1 | grep -q '"softbanned":true'
+}
+
+# Print the active catalog entry for SOURCE/VERSION, if one exists.
+# Revoked, softbanned, and expired RKP entries are treated as inactive.
+keybox_select_entry() {
+  _kse_hist="$1" _kse_src="$2" _kse_ver="$3"
+  printf '%s' "$_kse_hist" \
+    | grep -o '"entries":\[[^]]*\]' \
+    | grep -o '{[^}]*}' \
+    | grep -v '"revoked":true' \
+    | grep -v '"softbanned":true' \
+    | keybox_filter_expired_rkp \
+    | awk -v src="$_kse_src" -v ver="$_kse_ver" \
+        'index($0, "\"source\":\"" src "\"") && index($0, "\"version\":\"" ver "\"") { print; exit }'
+  unset _kse_hist _kse_src _kse_ver
+}
+
+# True if an RKP catalog entry has reached its X.509 expiry.
+# $1 = one JSON entry, $2 = optional fixed now (UTC ISO) for tests.
+keybox_rkp_expired() {
+  _kre_entry="$1"
+  _kre_now="${2:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+
+  printf '%s' "$_kre_entry" | grep -Eq '"rkp"[[:space:]]*:[[:space:]]*true' || {
+    unset _kre_entry _kre_now
+    return 1
+  }
+
+  _kre_exp=$(printf '%s' "$_kre_entry" | sed -n 's/.*"expires_at"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  if [ -z "$_kre_exp" ]; then
+    unset _kre_entry _kre_now _kre_exp
+    return 0
+  fi
+
+  _kre_exp=$(printf '%s' "$_kre_exp" | sed 's/\.[0-9]*Z$/Z/')
+  case "$_kre_exp" in *Z) ;; *) _kre_exp="${_kre_exp}Z" ;; esac
+  _kre_now=$(printf '%s' "$_kre_now" | sed 's/\.[0-9]*Z$/Z/')
+  case "$_kre_now" in *Z) ;; *) _kre_now="${_kre_now}Z" ;; esac
+
+  awk -v expiry="$_kre_exp" -v now="$_kre_now" 'BEGIN { exit !(expiry <= now) }'
+  _kre_rc=$?
+  unset _kre_entry _kre_now _kre_exp
+  return $_kre_rc
+}
+
+# Drop expired RKP entries from a newline-separated candidate list.
+keybox_filter_expired_rkp() {
+  while IFS= read -r _kfe_line || [ -n "$_kfe_line" ]; do
+    [ -n "$_kfe_line" ] || continue
+    keybox_rkp_expired "$_kfe_line" && continue
+    printf '%s\n' "$_kfe_line"
+  done
+  unset _kfe_line
+}
+
+# Keep only the RKP entry with the latest expires_at; leave non-RKP entries.
+keybox_dedupe_rkp_freshest() {
+  awk '
+    function field(obj, key,   r) {
+      if (!match(obj, "\"" key "\":\"[^\"]*\"")) return ""
+      r = substr(obj, RSTART, RLENGTH)
+      sub("^\"" key "\":\"", "", r)
+      sub("\"$", "", r)
+      return r
+    }
+    {
+      if ($0 ~ /"rkp":true/) {
+        expiry = field($0, "expires_at")
+        if (best == "" || expiry > best) {
+          best = expiry
+          bestline = $0
+        }
+      } else {
+        print $0
+      }
+    }
+    END { if (bestline != "") print bestline }
+  '
 }
 
 # Prefer active (non-softbanned) candidates. stdin: one JSON object per line
@@ -207,7 +444,7 @@ keybox_prefer_active() {
 keybox_latest_for_provider() {
   _klp_hist="$1"
   _klp_prov="$2"
-  _klp_entries=$(echo "$_klp_hist" | grep -o '"entries":\[[^]]*\]' | grep -o '{[^}]*"source":"'"$_klp_prov"'"[^}]*}' | grep -v '"revoked":true')
+  _klp_entries=$(echo "$_klp_hist" | grep -o '"entries":\[[^]]*\]' | grep -o '{[^}]*"source":"'"$_klp_prov"'"[^}]*}' | grep -v '"revoked":true' | keybox_filter_expired_rkp | keybox_dedupe_rkp_freshest)
   _klp_ver=$(printf '%s\n' "$_klp_entries" | grep -v '"softbanned":true' | sed 's/.*"version":"\([^"]*\)".*/\1/' | sort -rn | head -1)
   [ -z "$_klp_ver" ] && _klp_ver=$(printf '%s\n' "$_klp_entries" | grep '"softbanned":true' | sed 's/.*"version":"\([^"]*\)".*/\1/' | sort -rn | head -1)
   echo "$_klp_ver"

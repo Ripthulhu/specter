@@ -1,4 +1,4 @@
-import { shellEscape } from './utils.js';
+import { shellEscape, wireRowActivation } from './utils.js';
 import { setGlobal, deleteGlobal } from './utils.js';
 
 const ALLOWED_HOSTS = [
@@ -9,8 +9,8 @@ const ALLOWED_HOSTS = [
 ];
 
 export function initRedirect() {
-  document.querySelectorAll('[data-url]').forEach(el => {
-    el.addEventListener('click', () => openUrl((el as HTMLElement).dataset.url || ''));
+  document.querySelectorAll<HTMLElement>('[data-url]').forEach(el => {
+    wireRowActivation(el, () => openUrl(el.dataset.url || ''));
   });
 }
 

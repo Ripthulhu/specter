@@ -1,5 +1,6 @@
 import { cfgGet, cfgSet, cfgInvalidate } from './cfg.js';
 import { CONTROL_TOGGLES } from './constants.js';
+import { applyTranslations, t } from './i18n.js';
 import { setDevMode } from './utils.js';
 
 function labelFromKey(key: string): string {
@@ -17,94 +18,95 @@ export function renderControlToggles() {
   const action = document.getElementById('control-action-container');
   if (!boot || !background || !action) return;
 
+  // Re-rendering must replace rows rather than append a second copy.
+  for (const container of [boot, background, action]) {
+    container.querySelectorAll('[data-control-toggle]').forEach(row => row.remove());
+  }
+
   for (const toggle of CONTROL_TOGGLES) {
     const container = toggle.section === 'boot' ? boot : toggle.section === 'background' ? background : action;
     const labelKey = i18nLabelKey(toggle.key);
     const descKey = labelKey + '_desc';
 
-    const row = document.createElement('div');
-    row.className = 'list-item list-item--toggle';
-    row.id = toggle.id + '-row';
+    const row = document.createElement('sp-settings-row');
+    row.id = `${toggle.id}-row`;
+    row.setAttribute('variant', 'toggle');
+    row.dataset.controlToggle = '1';
 
-    const iconDiv = document.createElement('div');
-    iconDiv.className = 'li-icon';
-    iconDiv.innerHTML = `<md-icon aria-hidden="true">${toggle.icon}</md-icon>`;
+    const icon = document.createElement('md-icon');
+    icon.setAttribute('slot', 'icon');
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = toggle.icon;
 
-    const content = document.createElement('div');
-    content.className = 'list-item-content';
+    const headline = document.createElement('span');
+    headline.setAttribute('slot', 'headline');
+    headline.dataset.i18n = labelKey;
+    headline.textContent = toggle.title || labelFromKey(toggle.key);
 
-    const label = document.createElement('div');
-    label.className = 'toggle-text';
-    label.dataset.i18n = labelKey;
-    label.textContent = toggle.title || labelFromKey(toggle.key);
-    content.appendChild(label);
+    const supporting = document.createElement('span');
+    supporting.setAttribute('slot', 'supporting');
+    supporting.dataset.i18n = descKey;
+    supporting.textContent = toggle.description || '';
 
-    const hint = document.createElement('span');
-    hint.className = 'supporting-text';
-    hint.dataset.i18n = descKey;
-    hint.textContent = toggle.description || '';
-    content.appendChild(hint);
-
-    const spacer = document.createElement('div');
-    spacer.className = 'spacer';
-
-    const sw = document.createElement('md-switch');
-    sw.icons = true;
-    sw.id = toggle.id;
-    sw.setAttribute('aria-label', labelFromKey(toggle.key));
-    sw.dataset.i18nAria = labelKey;
-
-    const ripple = document.createElement('md-ripple');
-
-    const actionArea = document.createElement('div');
-    actionArea.className = 'li-toggle-action';
+    row.append(icon, headline, supporting);
 
     if (toggle.configurable) {
-      const cue = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      cue.setAttribute('class', 'li-config-chevron');
-      cue.setAttribute('viewBox', '0 0 8 14');
-      cue.setAttribute('width', '8');
-      cue.setAttribute('height', '14');
-      cue.setAttribute('fill', 'none');
-      cue.setAttribute('stroke', 'currentColor');
-      cue.setAttribute('stroke-width', '2');
-      cue.setAttribute('stroke-linecap', 'round');
-      cue.setAttribute('stroke-linejoin', 'round');
-      cue.setAttribute('aria-hidden', 'true');
-      cue.innerHTML = '<path d="M1.5 2L6.5 7L1.5 12"/>';
-      actionArea.appendChild(cue);
-
-      const div = document.createElement('div');
-      div.className = 'li-config-divider';
-      div.setAttribute('aria-hidden', 'true');
-      actionArea.appendChild(div);
+      row.setAttribute('has-page', '');
+      const config = document.createElement('button');
+      config.type = 'button';
+      config.className = 'li-config-btn';
+      config.setAttribute('data-config', '');
+      config.setAttribute('slot', 'trailing');
+      config.setAttribute(
+        'aria-label',
+        `${t('control_configure', 'Configure')} ${t(labelKey, labelFromKey(toggle.key))}`,
+      );
+      config.innerHTML = `<svg class="li-config-chevron" viewBox="0 0 8 14" width="8" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 2L6.5 7L1.5 12"/></svg>`;
+      const divider = document.createElement('div');
+      divider.className = 'li-config-divider';
+      divider.setAttribute('slot', 'trailing');
+      divider.setAttribute('aria-hidden', 'true');
+      row.append(config, divider);
     }
 
-    actionArea.appendChild(sw);
+    const sw = document.createElement('md-switch');
+    sw.setAttribute('slot', 'trailing');
+    sw.setAttribute('icons', '');
+    sw.id = toggle.id;
+    sw.setAttribute('aria-label', labelFromKey(toggle.key));
+    sw.setAttribute('data-i18n-aria', labelKey);
+    row.append(sw);
 
-    row.appendChild(iconDiv);
-    row.appendChild(content);
-    row.appendChild(actionArea);
-    row.appendChild(ripple);
     container.appendChild(row);
   }
 
   wireControlToggles();
+  applyTranslations();
 }
 
 export function wireRowDialog(rowId: string, open: () => void) {
   const row = document.getElementById(rowId);
-  if (!row) return;
-  row.addEventListener('click', e => {
-    if (e.composedPath().some(n => n instanceof Element && n.localName === 'md-switch')) return;
-    open();
-  });
+  if (!row || row.dataset.spWired) return;
+  row.dataset.spWired = '1';
+
+  const config = row.querySelector<HTMLElement>('[data-config], .li-config-btn');
+
+  // Configurable toggle rows: the row body opens the page; the switch itself
+  // toggles state. The chevron is a second, explicit affordance for the page.
+  row.addEventListener('sp-activate', open);
+  if (config) {
+    config.addEventListener('click', event => {
+      event.stopPropagation();
+      open();
+    });
+  }
 }
 
 export function wireControlToggles() {
   for (const { id, key, default: def } of CONTROL_TOGGLES) {
     const sw = document.getElementById(id) as MdSwitch | null;
-    if (!sw) continue;
+    if (!sw || sw.dataset.spControlWired === '1') continue;
+    sw.dataset.spControlWired = '1';
     cfgGet(key, def || '1').then(val => { sw.selected = val !== '0'; });
     sw.addEventListener('change', () => {
       cfgSet(key, sw.selected ? '1' : '0');
@@ -125,17 +127,9 @@ export async function refreshControlToggles() {
 export function wireDevMode() {
   const sw = document.getElementById('dev-mode-switch') as MdSwitch | null;
   if (!sw) return;
+  cfgGet('dev_mode', 'false').then(val => { sw.selected = val === 'true'; });
   sw.addEventListener('change', () => {
     setDevMode(sw.selected);
     cfgSet('dev_mode', sw.selected ? 'true' : 'false');
   });
-  const row = sw.closest('.list-item');
-  if (row) {
-    row.addEventListener('click', e => {
-      if (e.composedPath().some(n => n instanceof Element && n.localName === 'md-switch')) return;
-      sw.selected = !sw.selected;
-      setDevMode(sw.selected);
-      cfgSet('dev_mode', sw.selected ? 'true' : 'false');
-    });
-  }
 }

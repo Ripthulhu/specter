@@ -62,6 +62,14 @@ unset _bf _bf_default
 ksm_enforce_singleton >/dev/null || true
 
 sh "$MODDIR/features/keystore_info.sh" >"$SPECTER_DIR/log/keystore_info.log" 2>&1 || true
+sh "$MODDIR/features/modules_state.sh" >/dev/null 2>&1 || true
+write_webui_state
+# Keep the setup page's cache warm; the page renders it before refreshing.
+if command -v setsid >/dev/null 2>&1; then
+  setsid sh "$MODDIR/features/setup_info.sh" >/dev/null 2>&1 &
+else
+  sh "$MODDIR/features/setup_info.sh" >/dev/null 2>&1 &
+fi
 
 log_i "SERVICE" "Boot-time features done"
 

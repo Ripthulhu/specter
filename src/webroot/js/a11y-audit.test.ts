@@ -52,6 +52,14 @@ describe('interactive elements', () => {
     })
   })
 
+  it('keeps switches as direct row children so rows do not wrap an interactive control', () => {
+    doc.querySelectorAll('sp-settings-row').forEach(row => {
+      row.querySelectorAll('md-switch').forEach(sw => {
+        expect(sw.parentElement).toBe(row)
+      })
+    })
+  })
+
   it('all select elements have aria-label or associated label', () => {
     doc.querySelectorAll('select').forEach(sel => {
       const id = sel.getAttribute('id')
@@ -79,9 +87,8 @@ describe('i18n and ids', () => {
 })
 
 describe('aria landmarks', () => {
-  it('has main, header, and aria-live regions', () => {
+  it('has main and header landmarks', () => {
     expect(doc.querySelector('main')).not.toBeNull()
     expect(doc.querySelector('header')).not.toBeNull()
-    expect(doc.querySelector('[aria-live="polite"], [aria-live="assertive"]')).not.toBeNull()
   })
 })

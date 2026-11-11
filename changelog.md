@@ -1,3 +1,32 @@
+# v2.0.0
+
+### Highlights
+
+- **WebUI performance fixes**: skeleton-first page loading, on-demand modules, one startup snapshot, no Home shell reads, heavy work off the UI thread.
+- **WebUI component system**: shared rows, sections, skeletons, tooltips and snackbar. Legacy list code removed.
+- **Material 3 Expressive**: grouped cards, shared shapes and type, themed branding, Monet/HCT palette.
+- **HMA-OSS scope manager**: per-app scope and blacklist editing, on-device presets, detector and Xposed handling. Auto-update off by default.
+- **Keybox catalog and watch**: R2 catalog with fallback, filters, details page, hourly revoked/expired replacement.
+- **App Targeting**: grouped rows, filters, search, async apply, blacklist pruning.
+- **Setup page**: native snapshot with shell fallback.
+- **Hot install**: userspace updates without reboot; mounted payloads still reboot.
+- **Boot Hash page**: custom hash and cache controls.
+- **10 locales**: Arabic, Spanish, French, Hungarian, Indonesian, Polish, Russian, Turkish, Vietnamese, Chinese.
+
+### Changes and fixes
+
+- HMA config generated on-device; downloaded config URL removed.
+- Auto Keybox page and HMA launch/reload toggles removed; refresh watch replaces Auto Keybox.
+- HMA auto-update off by default, 6h. Keybox watch 60m with auto-replace toggle.
+- Action pipeline non-interactive, skips auto-managed target/HMA jobs unless forced.
+- Save actions run out of process; Security Patch, Boot Hash and OMK stay open.
+- Keybox fixes: revocation serial matching, minified XML, expired roots, revoked entries.
+- Fork: verify keybox replacements before installation and convert PKCS#8 private keys for TEESimulator-RS.
+- Fork: retain Pixel 10 Android 17 fingerprint handling and verified module downloads.
+- Hot install: no leftover Magisk staging stub after reboot.
+- Also fixed: blacklist back navigation, fixed targets, HMA merge, theme persistence, log tabs, keybox filters, home truncation.
+- 1032 WebUI tests, 589 shell assertions, mksh emulation, UI coverage, fewer shell forks.
+
 # v1.5.1
 
 - Check keybox validity and revocation automatically, and replace a keybox only after validating its replacement.
@@ -70,7 +99,7 @@
 - Keystore management prefers TEESimulator over the Tricky Store family
 - Action pipeline security patch step defaults off
 - Play Store data clear defaults off
-- Removed the TEE check, TEE status display, and custom boot hash stack — keystore backends run their own TEE checks; declaring a status only confused users into thinking their device was broken
+- Removed the TEE check, TEE status display, and custom boot hash stack; keystore backends run their own TEE checks, and declaring a status only confused users into thinking their device was broken
 - Singleton enforcement considers enabled modules only
 - Custom ROM props exposed in ROM Cleaner
 
@@ -139,9 +168,9 @@
 - `customize.sh`: omit TEE status line when status file missing
 
 **Fixed**
-- Auto-target not working after clean install — missing toggle `.val` files created on boot
+- Auto-target not working after clean install: missing toggle `.val` files created on boot
 - Scheduler stale PID check: `kill -0` can match reused PID after reboot; now verifies cmdline
-- inotifyd handler exits when `toggle_auto_target.val` missing — shell default fallback (`${_cg_val:-1}`)
+- inotifyd handler exits when `toggle_auto_target.val` missing; shell default fallback (`${_cg_val:-1}`)
 - Auto-target inotify handler uses `su -c` to bypass KernelSU SELinux restrictions
 
 # v1.4.4-14
@@ -150,13 +179,13 @@
 - Conflict system rewritten: toggle `.val` files are the single source of truth; `resolve_conflicts()` writes `toggle_<feature>=0` for claimed features; `_feature_should_run()` checks toggle only (removed separate `_conflict_claimed()` gate); conflict section priority switches batch-update toggles
 - `action.sh` and `auto_target.sh` use `_feature_should_run()` instead of manual `_conflict_claimed()` checks
 - `conflict_set_choice()` syncs feature toggles when priority changes
-- Dialog UIs (prop-handler, boot-harden, gms, adb-disabler, rom-fingerprint) check parent toggle state — child switches disabled with banner when parent is OFF
+- Dialog UIs (prop-handler, boot-harden, gms, adb-disabler, rom-fingerprint) check parent toggle state; child switches disabled with banner when parent is OFF
 - Feature names exposed in `conflict_status_json()` + shown in UI hint text
 - `exec()` bridge: added timeout, fixed exit code extraction from JSON responses
 - CI cleanup: removed Playwright e2e and coverage (trimmed ~50s per run), fixed shellcheck warnings
 
 **Fixed**
-- `_conflict_registry()` fallback path broke when `$MODDIR` unset in web bridge — BRENE never appeared in conflict section
+- `_conflict_registry()` fallback path broke when `$MODDIR` unset in web bridge; BRENE never appeared in conflict section
 - Passive module conflict choices overwritten every boot (user selection wiped on reboot)
 - sha256sum mock recursion in tests (hung for 18s on CI)
 

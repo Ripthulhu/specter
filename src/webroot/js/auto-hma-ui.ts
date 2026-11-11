@@ -1,9 +1,27 @@
 import { cfgGet, cfgSet } from './cfg.js';
-import { getTranslation } from './i18n.js';
+import { t } from './i18n.js';
 import { wireRowDialog } from './toggles.js';
 import { openSubPage } from './subpage.js';
 
-const t = (key: string, fallback: string): string => getTranslation(key) || fallback;
+
+const HOURS_TO_SECONDS = 3600;
+const DEFAULT_HOURS = 6;
+const MIN_HOURS = 1;
+const MAX_HOURS = 168;
+
+function clampHours(hours: number): number {
+  return Math.min(MAX_HOURS, Math.max(MIN_HOURS, Math.round(hours)));
+}
+
+function storedSecondsToHours(raw: string | null | undefined): number {
+  const seconds = parseInt(raw || '', 10);
+  return Number.isFinite(seconds) ? clampHours(seconds / HOURS_TO_SECONDS) : DEFAULT_HOURS;
+}
+
+function inputHours(value: string): number {
+  const hours = parseInt(value, 10);
+  return Number.isFinite(hours) ? clampHours(hours) : DEFAULT_HOURS;
+}
 
 export function openAutoHmaDialog() {
   openSubPage({
@@ -15,7 +33,7 @@ export function openAutoHmaDialog() {
     ),
     masterToggle: {
       key: 'toggle_auto_hma',
-      defaultVal: '1',
+      defaultVal: '0',
       title: t('auto_hma_master', 'Use Auto-Update HMA Config'),
       syncSwitchId: 'toggle-background_auto_hma',
     },
@@ -23,32 +41,27 @@ export function openAutoHmaDialog() {
       {
         items: [
           {
-            type: 'custom',
-            id: 'auto-hma-interval',
-            render: async (container) => {
-              const raw = await cfgGet('hma_interval', '21600');
-              const hours = Math.max(1, Math.round(parseInt(raw || '21600', 10) / 3600));
-
-              container.innerHTML = `
-                <div class="list-item list-item--only list-item--input">
-                  <div class="li-icon"><md-icon aria-hidden="true">timer</md-icon></div>
-                  <div class="list-item-content">
-                    <div class="toggle-text">${t('auto_hma_interval', 'Interval (hours)')}</div>
-                    <span class="supporting-text">${t('auto_hma_interval_desc', 'How often the background job regenerates the HMA profile. Minimum 1 hour.')}</span>
-                  </div>
-                  <div class="spacer"></div>
-                  <div class="subpage-input-wrapper">
-                    <input type="number" id="auto-hma-interval-input" class="subpage-inline-input" min="1" max="168" value="${hours}" aria-label="${t('auto_hma_interval_aria', 'HMA update interval in hours')}">
-                    <span class="subpage-input-unit">h</span>
-                  </div>
-                </div>
-              `;
-
-              const input = container.querySelector('#auto-hma-interval-input') as HTMLInputElement | null;
-              input?.addEventListener('input', () => {
-                const value = Math.min(168, Math.max(1, parseInt(input.value || '6', 10)));
-                cfgSet('hma_interval', String(value * 3600));
-              });
+            type: 'input',
+            id: 'auto-hma-interval-input',
+            icon: 'timer',
+            title: t('auto_hma_interval', 'Interval (hours)'),
+            description: t('auto_hma_interval_desc', 'How often the background job regenerates the HMA profile. Minimum 1 hour.'),
+            inputType: 'number',
+            min: 1,
+            max: 168,
+            step: 1,
+            unit: 'h',
+            ariaLabel: t('auto_hma_interval_aria', 'HMA update interval in hours'),
+            getValue: async () => {
+              try {
+                const raw = await cfgGet('hma_interval', String(DEFAULT_HOURS * HOURS_TO_SECONDS));
+                return String(storedSecondsToHours(raw));
+              } catch {
+                return String(DEFAULT_HOURS);
+              }
+            },
+            onChange: (value: string) => {
+              cfgSet('hma_interval', String(inputHours(value) * HOURS_TO_SECONDS));
             },
           },
         ],
@@ -59,7 +72,7 @@ export function openAutoHmaDialog() {
       title: t('auto_hma_info_title', 'Background Updates'),
       text: t(
         'auto_hma_info_text',
-        'Background updates only write the HMA-OSS config. Open HMA-OSS or reboot to apply the new profile. If the config is missing or empty, the action button regenerates it. Enable Always Re-Generate HMA-OSS Config in the HMA-OSS Configs page to force regeneration on every action run.'
+        'Background updates regenerate the HMA-OSS config after app installs/updates and on the configured schedule; HMA-OSS reloads it while its service is running. If it does not pick it up, reboot or long-press the HMA-OSS Home status card. If the config is missing or empty, the action button regenerates it. Enable Always Re-Generate HMA-OSS Config in the HMA-OSS Configs page to force regeneration on every action run.'
       ),
     },
   });

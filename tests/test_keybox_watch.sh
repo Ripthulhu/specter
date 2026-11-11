@@ -1,0 +1,76 @@
+plan "keybox_watch.sh detects revocation and guards auto-replacement"
+
+bootstrap
+source_libs
+ensure_dir "$SPECTER_DIR/cache"
+
+cat > "$TEST_ROOT/fake_info.sh" <<'EOF'
+#!/bin/sh
+if [ -f "$SPECTER_DIR/replaced" ]; then
+  printf '%s' '{"installed":true,"revoked":false,"expired":false}' > "$SPECTER_KEYBOX_INFO"
+else
+  printf '%s' '{"installed":true,"revoked":true,"expired":false}' > "$SPECTER_KEYBOX_INFO"
+fi
+EOF
+
+cat > "$TEST_ROOT/fake_keybox.sh" <<'EOF'
+#!/bin/sh
+grep -q '"revoked":true' "$SPECTER_KEYBOX_INFO" || exit 0
+printf '%s' 'replaced' > "$SPECTER_DIR/replaced"
+EOF
+
+cat > "$TEST_ROOT/fake_info_healthy.sh" <<'EOF'
+#!/bin/sh
+printf '%s' '{"installed":true,"revoked":false,"expired":false}' > "$SPECTER_KEYBOX_INFO"
+EOF
+
+export SPECTER_KEYBOX_INFO="$TEST_ROOT/keybox_info.json"
+export SPECTER_KEYBOX_INFO_SCRIPT="$TEST_ROOT/fake_info.sh"
+export SPECTER_KEYBOX_SCRIPT="$TEST_ROOT/fake_keybox.sh"
+
+# A failed refresh must not act on an old revoked snapshot.
+printf '%s' '{"installed":true,"revoked":true}' > "$SPECTER_KEYBOX_INFO"
+printf '#!/bin/sh\nexit 1\n' > "$TEST_ROOT/fake_info_fail.sh"
+export SPECTER_KEYBOX_INFO_SCRIPT="$TEST_ROOT/fake_info_fail.sh"
+_out=$(run_feature keybox_watch.sh 2>&1)
+assert_contains "refresh failure: warns" "$_out" "refresh failed"
+assert_file_not_exists "refresh failure: no replacement" "$SPECTER_DIR/replaced"
+rm -f "$SPECTER_KEYBOX_INFO"
+printf '#!/bin/sh\nexit 0\n' > "$TEST_ROOT/fake_info_missing.sh"
+export SPECTER_KEYBOX_INFO_SCRIPT="$TEST_ROOT/fake_info_missing.sh"
+_out=$(run_feature keybox_watch.sh 2>&1)
+assert_contains "missing snapshot: warns" "$_out" "info unavailable"
+
+# Healthy keybox: check safely without replacement.
+export SPECTER_KEYBOX_INFO_SCRIPT="$TEST_ROOT/fake_info_healthy.sh"
+set_cfg toggle_keybox_auto_replace 1
+_out=$(run_feature keybox_watch.sh 2>&1)
+assert_not_contains "healthy: no replacement" "$_out" "attempting automatic replacement"
+assert_contains "healthy: verified updater runs" "$_out" "Verified updater completed"
+assert_file_not_exists "healthy: keybox retained" "$SPECTER_DIR/replaced"
+export SPECTER_KEYBOX_INFO_SCRIPT="$TEST_ROOT/fake_info.sh"
+
+# Revoked, Auto Keybox off: only a warning.
+rm -f "$SPECTER_DIR/replaced" "$SPECTER_DIR/cache/keybox_watch_last_replace"
+set_cfg toggle_keybox_auto_replace 0
+_out=$(run_feature keybox_watch.sh 2>&1)
+assert_contains "auto off: warns" "$_out" "auto-replace is disabled"
+assert_file_not_exists "auto off: guard not written" "$SPECTER_DIR/cache/keybox_watch_last_replace"
+
+# Revoked, Auto Keybox on, recent guard: no second attempt.
+rm -f "$SPECTER_DIR/replaced"
+set_cfg toggle_keybox_auto_replace 1
+printf '%s' "$(date +%s)" > "$SPECTER_DIR/cache/keybox_watch_last_replace"
+_out=$(run_feature keybox_watch.sh 2>&1)
+assert_contains "guard: waits" "$_out" "already attempted recently"
+assert_file_not_exists "guard: replacement skipped" "$SPECTER_DIR/replaced"
+
+# Revoked, Auto Keybox on, stale guard: one replacement, then a fresh snapshot.
+rm -f "$SPECTER_DIR/replaced"
+printf '%s' "1" > "$SPECTER_DIR/cache/keybox_watch_last_replace"
+_out=$(run_feature keybox_watch.sh 2>&1)
+assert_contains "replace: runs" "$_out" "Verified updater completed"
+assert_file_exists "replace: marker written" "$SPECTER_DIR/replaced"
+assert_contains "replace: snapshot refreshed" "$(cat "$SPECTER_KEYBOX_INFO")" '"revoked":false'
+
+done_testing

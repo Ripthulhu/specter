@@ -25,57 +25,105 @@ export function getCurrentLanguageCode(): string {
 let currentStrings: Record<string, string> = {};
 const fallbackStrings: Record<string, string> = enStrings;
 
+const LANGUAGE_CODES = ['en', 'zh', 'ru', 'fr', 'es', 'ar', 'pl', 'tr', 'id', 'hu', 'vn'];
+
+async function fetchLanguage(target: string): Promise<Record<string, string> | null> {
+  const w = window as any;
+  if (w.__langTarget === target && w.__langPromise) {
+    try {
+      const data = (await w.__langPromise) as Record<string, string> | null;
+      if (data) return data;
+    } catch { /* fall through */ }
+  }
+  try {
+    const res = await fetch('lang/' + target + '.json', { cache: 'no-cache' });
+    return res.ok ? await res.json() as Record<string, string> : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function initI18n() {
   const saved = await cfgGet('lang', 'auto') || 'auto';
   _currentLangCode = saved;
-  await applyLanguage(saved);
-  wireLanguageSelect(saved);
+  await applyLanguage(saved, false);
 }
 
-export async function applyLanguage(langCode: string) {
+export async function applyLanguage(langCode: string, notify = true) {
   _currentLangCode = langCode;
   cfgSet('lang', langCode);
-  const available = ['en', 'zh', 'ru', 'fr', 'es', 'ar', 'pl', 'tr', 'id', 'hu', 'vn'];
   let target = langCode;
   if (langCode === 'auto') {
     target = (navigator.language || '').slice(0, 2);
-    if (!available.includes(target)) target = 'en';
+    // Vietnamese is stored as `vn` for the existing language packs, but the
+    // browser reports the BCP-47 code `vi`.
+    if (target === 'vi') target = 'vn';
+    if (!LANGUAGE_CODES.includes(target)) target = 'en';
   }
 
-  if (target === 'en') {
-    currentStrings = enStrings;
-  } else {
+  // Set direction before any network work so RTL layouts don't flip later.
+  document.documentElement.dir = target === 'ar' ? 'rtl' : 'ltr';
+  // `vn` is an internal pack name, not a valid BCP-47 language tag.
+  document.documentElement.lang = target === 'vn' ? 'vi' : target;
+
+  if (target !== 'en') {
+    let cached: Record<string, string> | null = null;
     try {
-      const cached = localStorage.getItem('i18n_' + target);
-      if (cached) { currentStrings = JSON.parse(cached); }
-      const res = await fetch('lang/' + target + '.json?ts=' + Date.now());
-      currentStrings = await res.json();
-      localStorage.setItem('i18n_' + target, JSON.stringify(currentStrings));
-    } catch { /* cached will be used if fetch failed */ }
+      const raw = localStorage.getItem('i18n_' + target);
+      if (raw) {
+        cached = JSON.parse(raw) as Record<string, string>;
+        currentStrings = cached;
+        applyTranslations();
+      }
+    } catch { /* ignore corrupt cache */ }
+
+    const next = await fetchLanguage(target);
+    if (next && (!cached || JSON.stringify(next) !== JSON.stringify(cached))) {
+      currentStrings = next;
+      try { localStorage.setItem('i18n_' + target, JSON.stringify(next)); } catch {}
+    }
+  } else {
+    currentStrings = enStrings;
   }
 
   applyTranslations();
-  document.documentElement.dir = target === 'ar' ? 'rtl' : 'ltr';
-  document.dispatchEvent(new CustomEvent('languageChanged', { detail: { langCode } }));
+  if (notify) document.dispatchEvent(new CustomEvent('languageChanged', { detail: { langCode } }));
 }
 
 export function getTranslation(key: string): string | null {
   return currentStrings[key] || fallbackStrings[key] || null;
 }
 
-function applyTranslations() {
+/** Translate with a literal fallback; the single shared helper for UI modules. */
+export function t(key: string, fallback = ''): string {
+  return getTranslation(key) || fallback;
+}
+
+/**
+ * Translate and replace `{0}`, `{1}`, … placeholders with the supplied values.
+ * Keeping the placeholders in the packs lets each language choose word order.
+ */
+export function tf(key: string, fallback = '', ...values: Array<string | number>): string {
+  return t(key, fallback).replace(/\{(\d+)\}/g, (match, index: string) => {
+    const value = values[Number(index)];
+    return value === undefined ? match : String(value);
+  });
+}
+
+export function applyTranslations() {
   for (const el of document.querySelectorAll('[data-i18n]')) {
     const key = (el as HTMLElement).dataset.i18n;
     if (!key) continue;
     const val = currentStrings[key] || fallbackStrings[key];
     if (!val) continue;
-    if (el.tagName === 'TITLE') { document.title = val; continue; }
+    if (el.tagName === 'TITLE') { if (document.title !== val) document.title = val; continue; }
     if (el.tagName === 'MD-FILTER-CHIP') {
-      (el as HTMLElement & { label: string }).label = val;
+      const chip = el as HTMLElement & { label: string };
+      if (chip.label !== val) chip.label = val;
       if (el.hasAttribute('aria-label')) el.setAttribute('aria-label', val);
       continue;
     }
-    el.textContent = val;
+    if (el.textContent !== val) el.textContent = val;
   }
   for (const el of document.querySelectorAll('[data-i18n-aria]')) {
     const val = currentStrings[(el as HTMLElement).dataset.i18nAria!] || fallbackStrings[(el as HTMLElement).dataset.i18nAria!];
@@ -85,21 +133,8 @@ function applyTranslations() {
     const val = currentStrings[(el as HTMLElement).dataset.i18nPlaceholder!] || fallbackStrings[(el as HTMLElement).dataset.i18nPlaceholder!];
     if (val) (el as HTMLInputElement).placeholder = val;
   }
-}
-
-function wireLanguageSelect(currentLang: string) {
-  const select = document.getElementById('language-select') as HTMLSelectElement | null;
-  if (!select) return;
-  select.innerHTML = '';
-  const langs: [string, string][] = [['auto', 'Auto'], ['en', 'English'], ['zh', '中文'], ['ru', 'Русский'], ['fr', 'Français'], ['es', 'Español'], ['ar', 'العربية'], ['pl', 'Polski'], ['tr', 'Türkçe'], ['id', 'Bahasa indonesia'], ['hu', 'Magyar'], ['vn', 'Tiếng Việt']];
-  for (const [code, name] of langs) {
-    const opt = document.createElement('option');
-    opt.value = code; opt.textContent = name; select.appendChild(opt);
+  for (const el of document.querySelectorAll('[data-i18n-title]')) {
+    const val = currentStrings[(el as HTMLElement).dataset.i18nTitle!] || fallbackStrings[(el as HTMLElement).dataset.i18nTitle!];
+    if (val) el.setAttribute('title', val);
   }
-  select.value = currentLang;
-  select.addEventListener('change', () => applyLanguage(select.value));
-  document.addEventListener('languageChanged', () => {
-    const auto = select.querySelector('option[value="auto"]');
-    if (auto) auto.textContent = getTranslation('theme_mode_auto') || 'Auto';
-  });
 }

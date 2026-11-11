@@ -1,23 +1,15 @@
 # Specter
 
 <p align="center">
-  <img src="./screenshots/home.png" width="19%" alt="Home">
-  <img src="./screenshots/tools.png" width="19%" alt="Tools">
-  <img src="./screenshots/target.png" width="19%" alt="App Targeting">
-  <img src="./screenshots/control.png" width="19%" alt="Control">
-  <img src="./screenshots/settings.png" width="19%" alt="Settings">
+  <img src="./screenshots/banner.png" width="100%" alt="Specter">
 </p>
 
-[![latest release](https://img.shields.io/github/v/release/dpejoh/specter?label=Release&logo=github)](https://github.com/dpejoh/specter/releases/latest)
-[![CI](https://github.com/dpejoh/specter/actions/workflows/build-test.yml/badge.svg)](https://github.com/dpejoh/specter/actions/workflows/build-test.yml)
+[![latest release](https://img.shields.io/github/v/release/Ripthulhu/specter?label=Release&logo=github)](https://github.com/Ripthulhu/specter/releases/latest)
+[![CI](https://github.com/Ripthulhu/specter/actions/workflows/build-test.yml/badge.svg)](https://github.com/Ripthulhu/specter/actions/workflows/build-test.yml)
 
-Getting strong integrity, TEESimulator management, detection solve. Clean, focused, no bloat.
+Strong integrity, TEESimulator management, detection cleanup. Clean, focused, no bloat.
 
-[Download](https://github.com/dpejoh/specter/releases/latest)
-
-## Background
-
-Specter is a complete rewrite of what I originally built as Yurikey.
+[Download](https://github.com/Ripthulhu/specter/releases/latest)
 
 ## Support
 
@@ -30,8 +22,8 @@ Specter is a complete rewrite of what I originally built as Yurikey.
 
 1. Install [Tricky Store](https://github.com/5ec1cff/TrickyStore/releases/latest) /
    [TEESimulator](https://github.com/JingMatrix/TEESimulator/releases/latest) /
-   [TEESimulator-RS](https://github.com/Enginex0/TEESimulator-RS/releases/latest)
-   (Specter auto-installs TEESimulator-RS if none found — skip if using OhMyKeymint)
+   [Tricky Store OSS](https://github.com/beakthoven/TrickyStoreOSS/releases/latest)
+   (Specter auto-installs Tricky Store OSS if none found; skip if using OhMyKeymint)
 2. Install [Play Integrity Inject](https://github.com/KOWX712/PlayIntegrityFix/releases/latest)
    or [Play Integrity Fork](https://github.com/osm0sis/PlayIntegrityFork/releases/latest)
 3. Install Specter via Magisk / KernelSU / APatch
@@ -44,48 +36,38 @@ first-API correction, and AICore setup. Specter alone is not the full setup.
 
 ## Features
 
-- **Keybox**: multi-source catalog, custom keybox, Google revocation, backup/restore
+- **Keybox**: multi-source catalog, revocation watch with auto-replace, custom keybox, backup/restore
 - **Auto Target**: inotify + polling for new apps
-- **App Targeting**: per-app states, suffixes, blacklist
+- **App Targeting**: per-app states, suffixes
 - **Security Patch**: live fetch with offline fallback
 - **ROM Fingerprint**: cleans custom ROM props and prefixes
 - **ADB Disabler**: dev options, USB debugging, OEM unlock
-- **PIF**: auto-detect variant, fetch fingerprint, block spoof engines
+- **PIF**: auto-detect variant, apply a preferred fingerprint or fetch one
 - **GMS Kill**: force-stops DroidGuard/GMS, clears Play Store
-- **Module Configs**: HMA-OSS config generation, Zygisk Next
+- **HMA-OSS**: scope manager page, config generation, auto-update
+- **Zygisk Next**: detection and configuration
 - **Detection Cleanup**: removes detector logs, temp dirs, caches
 - **Widevine L1**: attestation keys via KmInstallKeybox
-- **Conflict Resolution**: 8 modules — aggressive disabled, passive coexists, TEESimulator WebUI feature ownership
-- **Scheduler**: periodic keybox info, auto-target, autopif
+- **Conflict Resolution**: aggressive modules disabled, passive coexists, TEESimulator WebUI feature ownership
+- **Scheduler**: keybox revocation watch, auto-target, HMA auto-update, autopif
 - **First-Boot**: backup originals, run full pipeline once
-
-## Requirements
-
-- Root access (Magisk / KernelSU / APatch)
-- [Tricky Store](https://github.com/5ec1cff/TrickyStore/releases/latest) /
-  [TEESimulator](https://github.com/JingMatrix/TEESimulator/releases/latest) /
-  [TEESimulator-RS](https://github.com/Enginex0/TEESimulator-RS/releases/latest) /
-  or OhMyKeymint
-  (Specter auto-installs TEESimulator-RS if none detected)
-- [Play Integrity Inject](https://github.com/KOWX712/PlayIntegrityFix/releases/latest)
-  or [Play Integrity Fork](https://github.com/osm0sis/PlayIntegrityFork/releases/latest)
 
 ## Build
 
 ```bash
-git clone https://github.com/dpejoh/specter
+git clone https://github.com/Ripthulhu/specter
 cd specter
 npm install
 npm run build
 ```
 
-Output: `Specter-v{version}.zip`
+Output: `Specter-v{version}-g{hash}.zip`
 
 ### Testing
 
 ```bash
-bash tests/run.sh          # Shell tests. 12 files, 321 assertions.
-npm test                   # TS tests. 10 files, 94 tests (vitest + happy-dom).
+bash tests/run.sh          # Shell tests
+npm test                   # WebUI tests
 npx tsc --noEmit           # TypeScript strict check
 python3 tests/test_https_download.py  # Local TLS tests; requires JDK + OpenSSL
 bash deps/apk/build.sh     # Rebuild bundled Android helpers after Java changes
@@ -103,42 +85,24 @@ release asset's SHA-256 digest; missing or mismatched digests stop installation.
 - No hardcoded `/data/adb/modules/Specter` paths in lib/ or features/
 - No `su -c` in feature scripts
 
-## Legal
-
-```
-FOR EDUCATIONAL PURPOSES ONLY.
-THE DEVELOPER DOES NOT CONDONE ILLEGAL ACTIVITIES INCLUDING BYPASSING DRM, VIOLATING TERMS OF SERVICE, OR COMMITTING FRAUD.
-USERS ARE SOLELY RESPONSIBLE FOR COMPLYING WITH APPLICABLE LAWS.
-```
-
-## Warning
-
-```
-SPECTER IS PROGRAMMED NOT TO CAUSE PROBLEMS, BUT AN UNLOCKED PHONE ALWAYS COMES WITH RISKS.
-NOTHING IS 100% GUARANTEED. USE AT YOUR OWN RISK.
-YOUR WARRANTY MAY BE VOIDED, APPS MAY BREAK, AND ACCOUNT BANS ARE POSSIBLE.
-ALWAYS MAINTAIN BACKUPS OF IMPORTANT DATA.
-```
-
 ## Translations
 
-The WebUI is translated into Arabic, Spanish, French, Hungarian, Indonesian, Polish, Russian, Turkish, and Chinese (mostly AI-generated. Human review welcome).
+The WebUI is translated into Arabic, Spanish, French, Hungarian, Indonesian, Polish, Russian, Turkish, Vietnamese, and Chinese (mostly AI-generated. Human review welcome).
 
 To contribute translations:
-- **Preferred**: Join the [Crowdin project](https://crowdin.com/project/specter-module) — web UI, no git needed
+- **Preferred**: Join the [Crowdin project](https://crowdin.com/project/specter-module) (web UI, no git needed)
 - **Alternative**: Edit the JSON files in `src/webroot/lang/` and submit a PR
 
-Automation:
-- Pushing changes to `src/webroot/lang/source/string.json` on `main` uploads the new keys to Crowdin
-- Every Monday a workflow downloads finished translations and opens a PR (`i18n: translation updates from Crowdin`)
-- Required repo secrets: `CROWDIN_PROJECT_ID`, `CROWDIN_PERSONAL_TOKEN`
+## Disclaimer
 
-Each `*.json` file is validated against `source/string.json` in CI (`npm test`). New keys without translations fall back to English.
+For educational purposes only. The developer does not condone illegal activities, including bypassing DRM, violating terms of service, or committing fraud; users are solely responsible for complying with applicable laws.
+
+Specter is programmed not to cause problems, but an unlocked phone always comes with risks. Nothing is 100% guaranteed: your warranty may be voided, apps may break, and account bans are possible. Use at your own risk, and always maintain backups of important data.
 
 ## Thanks
 
 - [chiteroman](https://github.com/chiteroman/PlayIntegrityFix), [KOWX712](https://github.com/KOWX712/PlayIntegrityFix) and [osm0sis](https://github.com/osm0sis/PlayIntegrityFork). PIF and forks.
-- [5ec1cff](https://github.com/5ec1cff/TrickyStore), [JingMatrix](https://github.com/JingMatrix/TEESimulator), [Enginex0](https://github.com/Enginex0/TEESimulator-RS). Tricky Store and forks.
+- [5ec1cff](https://github.com/5ec1cff/TrickyStore), [JingMatrix](https://github.com/JingMatrix/TEESimulator), [beakthoven](https://github.com/beakthoven/TrickyStoreOSS). Tricky Store and forks.
 - [KOWX712](https://github.com/KOWX712/Tricky-Addon-Update-Target-List), [Enginex0](https://github.com/Enginex0/tricky-addon-enhanced). Tricky Store Addon.
 - [eltavine](https://github.com/eltavine/Duck-Detector-Refactoring). Duck Detector.
 - [Citra-Standalone](https://github.com/Citra-Standalone/TSupport-Advance). TSupport-Advance.

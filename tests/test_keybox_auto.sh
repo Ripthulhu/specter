@@ -7,7 +7,9 @@ detect_keystore_manager
 export SPECTER_TMP_DIR="$TEST_ROOT"
 export TEST_NOW=$(date +%s)
 export TEST_SCENARIO=healthy
-set_cfg toggle_autokeybox 1
+set_cfg toggle_keybox_auto_replace 1
+printf '#!/bin/sh\nexit 0\n' > "$BIN_DIR/flock"
+chmod +x "$BIN_DIR/flock"
 printf 'original' > "$KSM_KEYBOX"
 printf 'replacement' | base64 | tr -d '\n' | tr "$STD_ALPHABET" "$SHUFFLED_ALPHABET" > "$TEST_ROOT/candidate.blob"
 
@@ -102,5 +104,26 @@ assert_contains "uses fresh catalog rather than shared cache" "$_out" "Installed
 assert_eq "replacement is active" "replacement" "$(cat "$KSM_KEYBOX")"
 assert_eq "previous keybox backed up" "original" "$(cat "$SPECTER_DIR/keybox-auto-backup/keybox.xml")"
 
-unset SPECTER_TMP_DIR TEST_SCENARIO TEST_NOW
+# The scheduler's watcher must reach this guarded updater, including when
+# certificate expiry is near but the catalog has not marked it expired.
+printf 'original' > "$KSM_KEYBOX"
+cat > "$TEST_ROOT/watch_info.sh" <<'MOCK'
+#!/bin/sh
+printf '%s' '{"installed":true,"revoked":false,"expired":false}' > "$SPECTER_KEYBOX_INFO"
+MOCK
+export SPECTER_KEYBOX_INFO="$TEST_ROOT/watch_info.json"
+export SPECTER_KEYBOX_INFO_SCRIPT="$TEST_ROOT/watch_info.sh"
+export SPECTER_KEYBOX_SCRIPT="$REPO_ROOT/src/features/keybox_auto.sh"
+export TEST_SCENARIO=expiring
+rm -f "$SPECTER_DIR/cache/keybox_watch_last_replace"
+_out=$(run_feature keybox_watch.sh)
+assert_contains "watch invokes verified updater" "$_out" "Verified updater completed"
+assert_eq "watch replaces expiring keybox" "replacement" "$(cat "$KSM_KEYBOX")"
+printf 'original' > "$KSM_KEYBOX"
+set_cfg toggle_keybox_auto_replace 0
+rm -f "$SPECTER_DIR/cache/keybox_watch_last_replace"
+run_feature keybox_watch.sh >/dev/null
+assert_eq "watch respects opt-in" "original" "$(cat "$KSM_KEYBOX")"
+
+unset SPECTER_TMP_DIR TEST_SCENARIO TEST_NOW SPECTER_KEYBOX_INFO SPECTER_KEYBOX_INFO_SCRIPT SPECTER_KEYBOX_SCRIPT
 done_testing

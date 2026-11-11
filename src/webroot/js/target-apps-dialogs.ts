@@ -1,18 +1,30 @@
 // Dialogs used by the App Targeting overlay. openModeDialog /
 // openRegenerateDialog take a context with the overlay state they mutate;
 // openTeesimModeDialog only shells out to teesim_mode.sh.
-import { exec, getModuleDir } from './bridge.js';
+import { exec, getModuleDir, spawnCommand } from './bridge.js';
 import { cfgSet } from './cfg.js';
-import { shellEscape } from './utils.js';
-import { showToast } from './toast.js';
-import { getTranslation } from './i18n.js';
-import { appendToOutput } from './terminal.js';
-import type { TargetApp, AppState } from './target-apps.js';
+import { escapeHtml, shellEscape } from './utils.js';
+import { showToast, showLoadingToast, updateToast } from './toast.js';
+import { t } from './i18n.js';
+import { showDialog } from './dialog.js';
+import { openSubPage, type SubPageInstance } from './subpage.js';
+import { openAppRegenerateDialog } from './app-list-dialogs.js';
+import type { AppListEntry } from './app-list-model.js';
 
-const t = (key: string, fallback: string): string => getTranslation(key) || fallback;
+/** Resolve after two frames, once the disabled button and toast have painted. */
+function afterNextPaint(): Promise<void> {
+    return new Promise(resolve => {
+        if (typeof requestAnimationFrame !== 'function') {
+            resolve();
+            return;
+        }
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+}
+
 
 export interface TargetDialogsContext {
-  apps: TargetApp[];
+  apps: AppListEntry[];
   getDefaultMode(): string;
   setDefaultMode(m: string): void;
   applyFilters(): void;
@@ -25,23 +37,18 @@ export function openTeesimModeDialog() {
     const moddir = getModuleDir();
     if (!moddir) return;
     const scriptPath = shellEscape(moddir + '/features/teesim_mode.sh');
-    const d = document.createElement('md-dialog');
-    d.innerHTML = `
-      <div slot="headline">${t('ta_teesim_mode_title', 'Operation Mode')}</div>
-      <div slot="content" class="ta-mode-content">
-        <p class="supporting-text ta-mode-desc">${t('ta_teesim_mode_desc', 'Applies to all apps in the TEESimulator default profile')}</p>
+    const d = showDialog(
+      escapeHtml(t('ta_teesim_mode_title', 'Operation Mode')),
+      `<div class="ta-mode-content">
+        <p class="supporting-text ta-mode-desc">${escapeHtml(t('ta_teesim_mode_desc', 'Applies to all apps in the TEESimulator default profile'))}</p>
         <md-outlined-segmented-button-set id="ta-teesim-mode-set">
-          <md-outlined-segmented-button value="patch" selected label="${t('ta_teesim_mode_patch', 'Patch')}"></md-outlined-segmented-button>
-          <md-outlined-segmented-button value="generation" label="${t('ta_teesim_mode_generation', 'Generation')}"></md-outlined-segmented-button>
+          <md-outlined-segmented-button value="patch" selected label="${escapeHtml(t('ta_teesim_mode_patch', 'Patch'))}"></md-outlined-segmented-button>
+          <md-outlined-segmented-button value="generation" label="${escapeHtml(t('ta_teesim_mode_generation', 'Generation'))}"></md-outlined-segmented-button>
         </md-outlined-segmented-button-set>
-      </div>
-      <div slot="actions">
-        <md-text-button class="dialog-action-close">${t('dialog_cancel', 'Cancel')}</md-text-button>
-        <md-filled-button id="ta-teesim-mode-apply">${t('dialog_apply', 'Apply')}</md-filled-button>
-      </div>
-    `;
-    document.body.appendChild(d);
-    d.addEventListener('close', () => document.body.removeChild(d));
+      </div>`,
+      `<md-text-button class="dialog-action-close">${escapeHtml(t('dialog_cancel', 'Cancel'))}</md-text-button>
+       <md-filled-button id="ta-teesim-mode-apply">${escapeHtml(t('dialog_apply', 'Apply'))}</md-filled-button>`
+    );
 
     let _touched = false;
     exec(`sh ${scriptPath} --get 2>/dev/null || echo patch`).then(({ stdout }) => {
@@ -65,155 +72,197 @@ export function openTeesimModeDialog() {
         if ((b as HTMLElement & { selected: boolean }).selected) mode = b.getAttribute('value') || 'patch';
       });
       applyBtn.disabled = true;
+      const loadingToast = showLoadingToast(t('common_loading', 'Loading...'));
+      await afterNextPaint();
       try {
-        const { code, stderr } = await exec(`sh ${scriptPath} --set ${shellEscape(mode)}`);
+        const { code, stderr } = await spawnCommand(`sh ${scriptPath} --set ${shellEscape(mode)}`);
         if (code !== 0) {
-          showToast(stderr.trim() || t('simple_toast_error', 'Failed'), { icon: 'error', type: 'error', autoCloseDelay: 3000 });
-          applyBtn.disabled = false;
+          updateToast(loadingToast, stderr.trim() || t('simple_toast_error', 'Failed'), { icon: 'error', type: 'error', autoCloseDelay: 3000 });
           return;
         }
-        showToast(t('ta_teesim_mode_saved', 'Operation mode saved'), { icon: 'check_circle', type: 'success', autoCloseDelay: 2500 });
+        updateToast(loadingToast, t('ta_teesim_mode_saved', 'Operation mode saved'), { icon: 'check_circle', type: 'success', autoCloseDelay: 2500 });
         d.close();
       } catch {
-        showToast(t('simple_toast_error', 'Failed'), { icon: 'error', type: 'error', autoCloseDelay: 3000 });
+        updateToast(loadingToast, t('simple_toast_error', 'Failed'), { icon: 'error', type: 'error', autoCloseDelay: 3000 });
+      } finally {
         applyBtn.disabled = false;
       }
     });
     d.querySelector('.dialog-action-close')!.addEventListener('click', () => d.close());
-    d.show();
     paintSeg(d);
   }
 
 function paintSeg(root: HTMLElement): void {
     const rootStyle = document.documentElement.style;
-    const hex: Record<string, [string, string]> = {
+    const colors: Record<string, [string, string]> = {
       bare: [rootStyle.getPropertyValue('--md-sys-color-primary').trim(), rootStyle.getPropertyValue('--md-sys-color-on-primary').trim()],
       conditional: [rootStyle.getPropertyValue('--md-sys-color-tertiary').trim(), rootStyle.getPropertyValue('--md-sys-color-on-tertiary').trim()],
       force: [rootStyle.getPropertyValue('--md-sys-color-error').trim(), rootStyle.getPropertyValue('--md-sys-color-on-error').trim()],
       patch: [rootStyle.getPropertyValue('--md-sys-color-primary').trim(), rootStyle.getPropertyValue('--md-sys-color-on-primary').trim()],
       generation: [rootStyle.getPropertyValue('--md-sys-color-error').trim(), rootStyle.getPropertyValue('--md-sys-color-on-error').trim()],
     };
-    const inject = (btn: Element) => {
-      const sr = btn.shadowRoot;
-      if (!sr) { requestAnimationFrame(() => inject(btn)); return; }
+    root.querySelectorAll<HTMLElement>('md-outlined-segmented-button').forEach(btn => {
       const val = btn.getAttribute('value');
       if (!val) return;
-      const h = hex[val];
-      if (!h || !h[0] || !h[1]) return;
-      const [bg, fg] = h;
-      const sheet = new CSSStyleSheet();
-      sheet.replaceSync(`.md3-segmented-button--selected{background-color:${bg}}.md3-segmented-button.md3-segmented-button--selected:enabled .md3-segmented-button__label-text{color:${fg}}.md3-segmented-button.md3-segmented-button--selected:enabled:hover .md3-segmented-button__label-text{color:${fg}}.md3-segmented-button.md3-segmented-button--selected:enabled:focus .md3-segmented-button__label-text{color:${fg}}.md3-segmented-button.md3-segmented-button--selected:enabled:active .md3-segmented-button__label-text{color:${fg}}.md3-segmented-button--selected .md3-segmented-button__icon{color:${fg}}.md3-segmented-button--selected .md3-segmented-button__checkmark-path{stroke:${fg}}.md3-segmented-button--selected:hover .md3-segmented-button__checkmark-path{stroke:${fg}}.md3-segmented-button--selected:focus .md3-segmented-button__checkmark-path{stroke:${fg}}.md3-segmented-button--selected:active .md3-segmented-button__checkmark-path{stroke:${fg}}`);
-      sr.adoptedStyleSheets = [...sr.adoptedStyleSheets, sheet];
-    };
-    root.querySelectorAll('md-outlined-segmented-button').forEach(inject);
-
-    const set = root.querySelector('md-outlined-segmented-button-set');
-    if (set) {
-      const injectFlex = () => {
-        const sr = set.shadowRoot;
-        if (!sr) { requestAnimationFrame(injectFlex); return; }
-        const s = new CSSStyleSheet();
-        s.replaceSync('::slotted(md-outlined-segmented-button){flex:1;min-width:0}');
-        sr.adoptedStyleSheets = [...sr.adoptedStyleSheets, s];
-      };
-      injectFlex();
-    }
+      const pair = colors[val];
+      if (!pair || !pair[0] || !pair[1]) return;
+      const [bg, fg] = pair;
+      btn.classList.add('segmented-flex');
+      btn.style.setProperty('--md-outlined-segmented-button-selected-container-color', bg);
+      btn.style.setProperty('--md-outlined-segmented-button-selected-label-text-color', fg);
+      btn.style.setProperty('--md-outlined-segmented-button-selected-icon-color', fg);
+    });
   }
 
-export function openModeDialog(ctx: TargetDialogsContext) {
-    const d = document.createElement('md-dialog');
-    d.innerHTML = `
-      <div slot="headline">${t('ta_mode_settings', 'Default Mode')}</div>
-      <div slot="content" class="ta-mode-content">
-        <p class="supporting-text ta-mode-desc">${t('ta_mode_desc', 'Controls the default mode suffix added to new app targets in Tricky Store')}</p>
-        <md-outlined-segmented-button-set>
-          <md-outlined-segmented-button value="bare"${ctx.getDefaultMode() === 'bare' ? ' selected' : ''} label="${t('ta_mode_bare', 'Auto')}"></md-outlined-segmented-button>
-          <md-outlined-segmented-button value="conditional"${ctx.getDefaultMode() === 'conditional' ? ' selected' : ''} label="? ${t('ta_mode_conditional', 'Leaf')}"></md-outlined-segmented-button>
-          <md-outlined-segmented-button value="force"${ctx.getDefaultMode() === 'force' ? ' selected' : ''} label="! ${t('ta_mode_force', 'Gen')}"></md-outlined-segmented-button>
-        </md-outlined-segmented-button-set>
-        <div class="list-item list-item--toggle">
-          <div class="li-icon"><md-icon aria-hidden="true">compare_arrows</md-icon></div>
-          <div class="list-item-content">
-            <div class="toggle-text">${t('ta_mode_override_label', 'Override existing')}</div>
-            <span class="supporting-text">${t('ta_mode_override_desc', 'Apply this mode to all currently selected apps')}</span>
-          </div>
-          <div class="spacer"></div>
-          <md-switch icons id="ta-mode-do-override"></md-switch>
-        </div>
-      </div>
-      <div slot="actions">
-        <md-text-button class="dialog-action-close">${t('dialog_cancel', 'Cancel')}</md-text-button>
-        <md-filled-button id="ta-mode-apply">${t('dialog_apply', 'Apply')}</md-filled-button>
-      </div>
-    `;
-    document.body.appendChild(d);
-    d.addEventListener('close', () => document.body.removeChild(d));
+export function openModeSubpage(ctx: TargetDialogsContext): Promise<SubPageInstance> {
+  const currentMode = ctx.getDefaultMode();
 
-    let _mode = ctx.getDefaultMode();
-    d.querySelectorAll('md-outlined-segmented-button').forEach(b => {
-      b.addEventListener('click', () => { _mode = b.getAttribute('value') || 'bare'; });
-    });
-    d.querySelector('#ta-mode-apply')!.addEventListener('click', () => {
-      ctx.setDefaultMode(_mode);
-      cfgSet('target_default_mode', _mode);
-      const doOverride = (d.querySelector('#ta-mode-do-override') as any)?.selected;
-      let count = 0;
-      if (doOverride) {
-        for (const app of ctx.apps) {
-          if (app.state !== 'unchecked') {
-            app.state = _mode as AppState;
-            count++;
-          }
-        }
-        ctx.applyFilters();
-      }
-      d.close();
-      if (count > 0) {
-        showToast(t('ta_mode_applied_both', 'Default saved, {count} apps overridden').replace('{count}', String(count)), { icon: 'check_circle', type: 'success', autoCloseDelay: 2500 });
-      } else {
-        showToast(t('ta_default_saved', 'Default mode saved'), { icon: 'check_circle', type: 'success', autoCloseDelay: 2500 });
-      }
-    });
-    d.querySelector('.dialog-action-close')!.addEventListener('click', () => d.close());
-    d.show();
-    paintSeg(d);
-  }
+  return openSubPage({
+    id: 'target-default-mode',
+    title: t('ta_mode_settings', 'Default Mode'),
+    description: t('ta_mode_desc', 'Controls the default mode suffix added to new app targets in Tricky Store'),
+    onClose: () => {
+      window.isOverlayOpen = true;
+      document.documentElement.style.overflow = 'hidden';
+    },
+    groups: [
+      {
+        title: t('ta_mode_settings', 'Default Mode'),
+        items: [
+          {
+            type: 'radio',
+            id: 'ta-mode-radio-bare',
+            name: 'target_default_mode',
+            value: 'bare',
+            title: t('ta_mode_bare', 'Auto'),
+            description: t('ta_mode_bare_desc', 'Auto-detect based on device TEE support'),
+            selected: currentMode === 'bare',
+            onSelect: () => {
+              ctx.setDefaultMode('bare');
+              cfgSet('target_default_mode', 'bare');
+              showToast(t('ta_default_saved', 'Default mode saved'), {
+                icon: 'check_circle',
+                type: 'success',
+                autoCloseDelay: 2500,
+              });
+            },
+          },
+          {
+            type: 'radio',
+            id: 'ta-mode-radio-conditional',
+            name: 'target_default_mode',
+            value: 'conditional',
+            title: t('ta_mode_conditional', 'Leaf'),
+            description: t('ta_mode_conditional_desc', 'Patch leaf certificate from hardware TEE'),
+            badge: '?',
+            selected: currentMode === 'conditional',
+            onSelect: () => {
+              ctx.setDefaultMode('conditional');
+              cfgSet('target_default_mode', 'conditional');
+              showToast(t('ta_default_saved', 'Default mode saved'), {
+                icon: 'check_circle',
+                type: 'success',
+                autoCloseDelay: 2500,
+              });
+            },
+          },
+          {
+            type: 'radio',
+            id: 'ta-mode-radio-force',
+            name: 'target_default_mode',
+            value: 'force',
+            title: t('ta_mode_force', 'Gen'),
+            description: t('ta_mode_force_desc', 'Generate certificate chain from keybox'),
+            badge: '!',
+            selected: currentMode === 'force',
+            onSelect: () => {
+              ctx.setDefaultMode('force');
+              cfgSet('target_default_mode', 'force');
+              showToast(t('ta_default_saved', 'Default mode saved'), {
+                icon: 'check_circle',
+                type: 'success',
+                autoCloseDelay: 2500,
+              });
+            },
+          },
+        ],
+      },
+      {
+        items: [
+          {
+            type: 'custom',
+            id: 'ta-mode-override',
+            render: (container) => {
+              const row = document.createElement('sp-settings-row');
+              row.id = 'ta-mode-override-row';
+              row.setAttribute('variant', 'action');
+              row.setAttribute('headline', t('ta_mode_override_label', 'Override existing'));
+              row.setAttribute('supporting-text', t('ta_mode_override_desc', 'Apply this mode to all currently selected apps'));
+              const icon = document.createElement('md-icon');
+              icon.setAttribute('slot', 'icon');
+              icon.setAttribute('aria-hidden', 'true');
+              icon.textContent = 'compare_arrows';
+              row.append(icon);
+
+              const handleOverride = () => {
+                const mode = ctx.getDefaultMode();
+                let count = 0;
+                for (const app of ctx.apps) {
+                  if (app.state !== 'unchecked') {
+                    app.state = mode;
+                    count++;
+                  }
+                }
+                if (count > 0) {
+                  ctx.applyFilters();
+                  showToast(
+                    t('ta_mode_applied_both', 'Default saved, {count} apps overridden').replace('{count}', String(count)),
+                    { icon: 'check_circle', type: 'success', autoCloseDelay: 2500 },
+                  );
+                } else {
+                  showToast(t('ta_default_saved', 'Default mode saved'), {
+                    icon: 'check_circle',
+                    type: 'success',
+                    autoCloseDelay: 2500,
+                  });
+                }
+              };
+
+              row.addEventListener('sp-activate', handleOverride);
+              row.addEventListener('click', () => {
+                if (!customElements.get('sp-settings-row')) {
+                  handleOverride();
+                }
+              });
+
+              container.replaceWith(row);
+            },
+          },
+        ],
+      },
+    ],
+  });
+}
+
+export const openModeDialog = openModeSubpage;
 
 export function openRegenerateDialog(ctx: TargetDialogsContext) {
-    const d = document.createElement('md-dialog');
-    d.innerHTML = `
-      <div slot="headline">${t('ta_regenerate', 'Regenerate')}</div>
-      <div slot="content">
-        <p class="supporting-text">${t('ta_regenerate_confirm', 'This will re-scan all installed apps and fully rebuild target.txt. Custom per-app states will be overwritten. A backup will be saved.')}</p>
-      </div>
-      <div slot="actions">
-        <md-text-button class="dialog-action-close">${t('dialog_cancel', 'Cancel')}</md-text-button>
-        <md-filled-button id="ta-regenerate-confirm">${t('ta_regenerate', 'Regenerate')}</md-filled-button>
-      </div>
-    `;
-    document.body.appendChild(d);
-    d.addEventListener('close', () => document.body.removeChild(d));
-
-    d.querySelector('#ta-regenerate-confirm')!.addEventListener('click', async () => {
-      d.close();
-      ctx.loading.style.display = '';
-      ctx.list.style.display = 'none';
-
-      appendToOutput('[TARGET] Regenerating target.txt from all apps...');
-      try {
-        await exec(`sh ${shellEscape(getModuleDir() + '/features/target.sh')}`);
-        appendToOutput('[TARGET] Regeneration complete');
-        showToast(t('ta_regenerate_success', 'Target list regenerated'), { icon: 'check_circle', type: 'success', autoCloseDelay: 2500 });
-        await ctx.refreshApps();
-      } catch (e) {
-        appendToOutput(`[TARGET] Regeneration failed: ${e}`, true);
-      } finally {
-        ctx.loading.style.display = 'none';
-        ctx.list.style.display = '';
-      }
-    });
-
-    d.querySelector('.dialog-action-close')!.addEventListener('click', () => d.close());
-    d.show();
-  }
+  openAppRegenerateDialog({
+    confirmId: 'ta-regenerate-confirm',
+    title: t('ta_regenerate', 'Regenerate'),
+    body: t('ta_regenerate_confirm', 'This will re-scan all installed apps and fully rebuild target.txt. Custom per-app states will be overwritten. A backup will be saved.'),
+    confirmLabel: t('ta_regenerate', 'Regenerate'),
+    cancelLabel: t('dialog_cancel', 'Cancel'),
+    successLabel: t('ta_regenerate_success', 'Target list regenerated'),
+    loading: ctx.loading,
+    list: ctx.list,
+    run: async () => {
+      await exec(`sh ${shellEscape(getModuleDir() + '/features/target.sh')}`);
+    },
+    refresh: ctx.refreshApps,
+    logStart: '[TARGET] Regenerating target.txt from all apps...',
+    logDone: '[TARGET] Regeneration complete',
+    logFailed: '[TARGET] Regeneration failed',
+  });
+}
 

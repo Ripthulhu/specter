@@ -89,7 +89,7 @@ while IFS= read -r _entry; do
   case "$_candidate_expiry" in ''|*[!0-9]*) continue ;; esac
   [ "$_candidate_expiry" -gt "$_minimum" ] || continue
   cmp -s "$KSM_KEYBOX" "$_dir/original" || { log_w "AUTO_KEYBOX" "Keybox changed during check; cancelling"; exit 1; }
-  [ "$(cfg_get toggle_autokeybox 0)" = 1 ] || exit 0
+  [ "$(cfg_get toggle_keybox_auto_replace 0)" = 1 ] || exit 0
   case "$(cfg_get keybox_private false)" in true|1) exit 0 ;; esac
   [ -z "$(cfg_get keybox_custom_type '')" ] || exit 0
   mkdir -p "$SPECTER_DIR/keybox-auto-backup"
