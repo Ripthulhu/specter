@@ -59,6 +59,9 @@ jobs:
           echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
+      - name: Build Android helpers
+        run: bash deps/apk/build.sh
+
       - name: Build
         run: npm run build
 
@@ -73,6 +76,7 @@ jobs:
           zip -r "../${{ steps.version.outputs.zip_name }}" .
 
       - name: Push module to Telegram channel
+        if: github.repository == 'dpejoh/specter'
         env:
           MODULE_PATH: ${{ steps.version.outputs.zip_name }}
           MODULE_VERSION: ${{ steps.version.outputs.release_version }}

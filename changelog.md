@@ -1,3 +1,9 @@
+# v1.5.1
+
+- Check keybox validity and revocation automatically, and replace a keybox only after validating its replacement.
+- Convert PKCS#8 private keys to the PEM format expected by TEESimulator-RS, preserving the key and certificate chain.
+- Restore fork-specific update and release links.
+
 # v1.5.0
 
 ### Highlights:
