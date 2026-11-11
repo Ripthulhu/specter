@@ -86,10 +86,11 @@ public final class SetupProbe {
 
         addFeature(features, "Auto Target", dataDir, "toggle_auto_target", "1",
                 "auto_target_interval", "300");
-        addFeature(features, "Keybox revocation watch", dataDir, "toggle_keybox_info", "1",
-                "keybox_watch_interval", "300");
-        addFeature(features, "Auto Keybox", dataDir, "toggle_autokeybox", "0",
-                "autokeybox_interval", "86400");
+        addFeature(features, "Keybox refresh", dataDir, "toggle_keybox_info", "1",
+                "keybox_watch_interval", "3600");
+        JSONObject keyboxRefresh = features.getJSONObject(features.length() - 1);
+        keyboxRefresh.put("value", keyboxRefresh.getString("value") + " · replace "
+                + ("1".equals(cfg(dataDir, "toggle_keybox_auto_replace", "0")) ? "on" : "off"));
         if (hmaPresent) {
             addFeature(features, "Auto HMA config", dataDir, "toggle_auto_hma", "0",
                     "hma_interval", "21600");
