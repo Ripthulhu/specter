@@ -46,7 +46,10 @@ jobs:
         run: |
           python3 -m pip install cryptography
           curl -fsSL https://repo.maven.apache.org/maven2/org/json/json/20240303/json-20240303.jar -o "$RUNNER_TEMP/specter-json.jar"
-          SPECTER_JSON_JAR="$RUNNER_TEMP/specter-json.jar" python3 tests/test_keybox_verifier.py
+          for jar in bcprov bcpkix bcutil; do
+            curl -fsSL "https://repo.maven.apache.org/maven2/org/bouncycastle/${jar}-jdk18on/1.83/${jar}-jdk18on-1.83.jar" -o "$RUNNER_TEMP/$jar.jar"
+          done
+          SPECTER_JSON_JAR="$RUNNER_TEMP/specter-json.jar" SPECTER_BC_CLASSPATH="$RUNNER_TEMP/bcprov.jar:$RUNNER_TEMP/bcpkix.jar:$RUNNER_TEMP/bcutil.jar" python3 tests/test_keybox_verifier.py
 
       - name: Build Android helpers
         run: bash deps/apk/build.sh

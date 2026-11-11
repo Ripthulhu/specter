@@ -93,6 +93,80 @@ public final class KeyboxVerifier {
                 new ByteArrayInputStream(pem(pem, "CERTIFICATE")));
     }
 
+    private static byte[] slice(byte[] data, int start) {
+        return java.util.Arrays.copyOfRange(data, start, endOffset(data, start));
+    }
+
+    private static byte[] traditionalKey(byte[] pkcs8, X509Certificate leaf) throws Exception {
+        if (pkcs8[0] != 0x30) throw new IllegalArgumentException("Invalid PKCS8");
+        int version = contentOffset(pkcs8, 0);
+        int algorithm = endOffset(pkcs8, version);
+        int privateOctets = endOffset(pkcs8, algorithm);
+        if (pkcs8[algorithm] != 0x30 || pkcs8[privateOctets] != 0x04)
+            throw new IllegalArgumentException("Invalid PKCS8");
+        byte[] inner = java.util.Arrays.copyOfRange(pkcs8, contentOffset(pkcs8, privateOctets), endOffset(pkcs8, privateOctets));
+        if (inner[0] != 0x30 || endOffset(inner, 0) != inner.length)
+            throw new IllegalArgumentException("Invalid private key");
+        if (leaf.getPublicKey().getAlgorithm().equals("RSA")) return inner;
+        if (!leaf.getPublicKey().getAlgorithm().equals("EC")) throw new IllegalArgumentException("Unsupported key");
+
+        int algOid = contentOffset(pkcs8, algorithm);
+        int curve = endOffset(pkcs8, algOid);
+        if (pkcs8[curve] != 0x06 || endOffset(pkcs8, curve) != endOffset(pkcs8, algorithm))
+            throw new IllegalArgumentException("Expected named curve");
+        int ecVersion = contentOffset(inner, 0);
+        int scalar = endOffset(inner, ecVersion);
+        if (inner[ecVersion] != 0x02 || inner[scalar] != 0x04) throw new IllegalArgumentException("Invalid EC key");
+        int next = endOffset(inner, scalar);
+        boolean hadParams = false, hadPublicBits = false;
+        while (next < inner.length) {
+            int tag = inner[next] & 255;
+            if (tag == 0xa0 && !hadParams) hadParams = true;
+            else if (tag == 0xa1 && !hadPublicBits) hadPublicBits = true;
+            else throw new IllegalArgumentException("Invalid EC key field");
+            next = endOffset(inner, next);
+        }
+        byte[] params = der(0xa0, slice(pkcs8, curve));
+        byte[] publicDer = leaf.getPublicKey().getEncoded();
+        int publicAlgorithm = contentOffset(publicDer, 0);
+        int publicKey = endOffset(publicDer, publicAlgorithm);
+        if (publicDer[publicKey] != 0x03) throw new IllegalArgumentException("Invalid EC public key");
+        byte[] publicBits = der(0xa1, slice(publicDer, publicKey));
+        return der(0x30, concat(slice(inner, ecVersion), slice(inner, scalar), params, publicBits));
+    }
+
+    private static void normalize(String input, String output) throws Exception {
+        inspect(input, null, null);
+        byte[] xml = Files.readAllBytes(Paths.get(input));
+        NodeList keys = DocumentBuilderFactory.newInstance().newDocumentBuilder()
+                .parse(new ByteArrayInputStream(xml)).getElementsByTagName("Key");
+        String result = new String(xml, StandardCharsets.UTF_8);
+        String begin = "-----BEGIN PRIVATE KEY-----", end = "-----END PRIVATE KEY-----";
+        int cursor = 0;
+        for (int i = 0; i < keys.getLength(); i++) {
+            Element key = (Element) keys.item(i);
+            String original = text(key, "PrivateKey");
+            if (!original.contains(begin)) continue;
+            int from = result.indexOf(begin, cursor);
+            int to = result.indexOf(end, from);
+            if (from < 0 || to < 0) throw new IllegalArgumentException("Missing key text");
+            to += end.length();
+            if (!java.util.Arrays.equals(pem(original, "PRIVATE KEY"), pem(result.substring(from, to), "PRIVATE KEY")))
+                throw new IllegalArgumentException("Key text mismatch");
+            NodeList certs = key.getElementsByTagName("Certificate");
+            X509Certificate leaf = certificate(certs.item(0).getTextContent());
+            String label = leaf.getPublicKey().getAlgorithm().equals("EC") ? "EC PRIVATE KEY" : "RSA PRIVATE KEY";
+            byte[] encoded = traditionalKey(pem(original, "PRIVATE KEY"), leaf);
+            String replacement = "-----BEGIN " + label + "-----\n" +
+                    Base64.getMimeEncoder(64, new byte[]{'\n'}).encodeToString(encoded) +
+                    "\n-----END " + label + "-----";
+            result = result.substring(0, from) + replacement + result.substring(to);
+            cursor = from + replacement.length();
+        }
+        if (result.contains(begin)) throw new IllegalArgumentException("Unexpected key text");
+        Files.write(Paths.get(output), result.getBytes(StandardCharsets.UTF_8));
+    }
+
     private static String text(Element el, String name) {
         NodeList nodes = el.getElementsByTagName(name);
         if (nodes.getLength() != 1) throw new IllegalArgumentException("Missing or duplicate " + name);
@@ -183,6 +257,10 @@ public final class KeyboxVerifier {
 
     public static void main(String[] args) {
         try {
+            if (args.length == 3 && args[0].equals("normalize")) {
+                normalize(args[1], args[2]);
+                return;
+            }
             if (!(args.length == 2 && (args[0].equals("expiry") || args[0].equals("serial") || args[0].equals("rkp") || args[0].equals("algorithms"))) &&
                 !(args.length == 4 && args[0].equals("verify"))) throw new IllegalArgumentException("Invalid arguments");
             long expiry = inspect(args[1], args.length == 4 ? args[2] : null, args.length == 4 ? args[3] : null);

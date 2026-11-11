@@ -160,6 +160,10 @@ replacement, catalog, or verification data is unavailable, the existing keybox
 is kept and Specter tries again at the next interval. It posts a notification
 after replacement or when attention is needed.
 
+TEESimulator-RS 313 requires traditional EC or RSA PEM key pairs. Specter
+converts PKCS#8 key material to that format locally and verifies the resulting
+keybox again before installing it; certificate and key values are unchanged.
+
 These checks cannot establish that Google Play or a particular app will accept
 a shared keybox: a key may be revoked at any time or fail an app-specific
 integrity check. After a change, check Play Store's integrity result and Wallet.

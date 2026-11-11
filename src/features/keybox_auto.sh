@@ -79,6 +79,9 @@ while IFS= read -r _entry; do
   download "${KEYBOX_URL}/${_src}/${_ver}" "$_dir/download" || continue
   decode_keybox_blob "$_dir/download" "$_dir/candidate" || continue
   _candidate_expiry=$(_verify verify "$_dir/candidate" "$_dir/roots.json" "$_dir/status.json") || continue
+  _verify normalize "$_dir/candidate" "$_dir/normalized" || continue
+  _verify verify "$_dir/normalized" "$_dir/roots.json" "$_dir/status.json" >/dev/null || continue
+  mv -f "$_dir/normalized" "$_dir/candidate" || continue
   [ "$(_verify algorithms "$_dir/candidate")" = "$_current_algorithms" ] || continue
   if [ "$_current_rkp" = 1 ]; then
     [ "$(_verify rkp "$_dir/candidate")" = 1 ] || continue

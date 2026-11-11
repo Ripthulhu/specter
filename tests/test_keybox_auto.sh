@@ -19,11 +19,15 @@ case "$3:$4" in
   rkp:*/candidate) echo 0 ;;
   algorithms:*/candidate) [ "$TEST_SCENARIO" != algorithm ] && echo ec || echo rsa ;;
   algorithms:*) echo ec ;;
+  normalize:*) [ "$TEST_SCENARIO" != normalize_fail ] || exit 1; cp "$4" "$5" ;;
   expiry:*)
     case "$TEST_SCENARIO" in healthy) echo $((TEST_NOW + 432000)) ;; revoked) echo $((TEST_NOW + 604800)) ;; *) echo $((TEST_NOW + 86400)) ;; esac ;;
   verify:*/original)
     [ "$TEST_SCENARIO" != revoked ] || exit 1
     echo $((TEST_NOW + 86400)) ;;
+  verify:*/normalized)
+    [ "$TEST_SCENARIO" != invalid_normalized ] || exit 1
+    echo $((TEST_NOW + 432000)) ;;
   verify:*/candidate)
     [ "$TEST_SCENARIO" != invalid ] || exit 1
     [ "$TEST_SCENARIO" != short ] || { echo $((TEST_NOW + 90000)); exit 0; }
@@ -67,7 +71,7 @@ _out=$(run_feature keybox_auto.sh)
 assert_contains "short-lived candidate rejected" "$_out" "No verified longer-lived replacement"
 assert_eq "short-lived candidate leaves keybox" "original" "$(cat "$KSM_KEYBOX")"
 
-for TEST_SCENARIO in rkp algorithm unknown offline; do
+for TEST_SCENARIO in rkp algorithm unknown offline normalize_fail invalid_normalized; do
   export TEST_SCENARIO
   rm -f "$SPECTER_DIR/cache/keybox_catalog.json"
   _out=$(run_feature keybox_auto.sh)
