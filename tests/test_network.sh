@@ -10,7 +10,7 @@ cat > "$BIN_DIR/curl" <<'MOCK'
 #!/bin/sh
 [ "$1" = "--version" ] && exit 0
 printf '%s\n' "$*" >> "$TEST_ROOT/transport.log"
-case "$*" in *-fLs*--proto-redir*=https*) ;; *) exit 2 ;; esac
+case "$*" in *'--proto =https'*'--proto-redir =https'*'-fLs'*) ;; *) exit 2 ;; esac
 while [ "$#" -gt 0 ]; do
   if [ "$1" = -o ]; then shift; out=$1; fi
   shift
@@ -28,19 +28,19 @@ assert_eq "HTTPS: temp files under SPECTER_DIR" "yes" "$([ -d "$SPECTER_DIR/tmp"
 MOCK_HTTP_ERROR=1; export MOCK_HTTP_ERROR
 download 'https://example.com/missing' "$TEST_ROOT/result" ''
 assert_exit_code "HTTP error: reports failure" 1 "$?"
-# Android images do not ship curl: BusyBox wget is the HTTPS fallback.
+# Android images do not ship curl: use the certificate-validating helper.
 rm -f "$BIN_DIR/curl"
-cat > "$BIN_DIR/busybox" <<'MOCK'
+SPECTER_DEX="$TEST_ROOT/classes.dex"
+touch "$SPECTER_DEX"
+export SPECTER_DEX
+cat > "$BIN_DIR/app_process" <<'MOCK'
 #!/bin/sh
 printf '%s\n' "$*" >> "$TEST_ROOT/transport.log"
-while [ "$#" -gt 0 ]; do
-  case "$1" in -O|-qO) shift; out=$1 ;; esac
-  shift
-done
-printf 'busybox content' > "$out"
+printf 'Android verified content' > "$4"
 MOCK
-chmod +x "$BIN_DIR/busybox"
+chmod +x "$BIN_DIR/app_process"
 download 'https://example.com/keybox' "$TEST_ROOT/result" ''
-assert_eq "HTTPS without curl: busybox fallback content" 'busybox content' "$(cat "$TEST_ROOT/result")"
-assert_not_contains "HTTPS without curl: certificate validation not bypassed" "$(tail -1 "$TEST_ROOT/transport.log")" '--no-check-certificate'
+assert_eq "HTTPS without curl: Android verified content" 'Android verified content' "$(cat "$TEST_ROOT/result")"
+assert_not_contains "HTTPS without curl: busybox not used" "$(cat "$TEST_ROOT/transport.log")" 'busybox called'
+unset SPECTER_DEX
 done_testing
