@@ -1,3 +1,10 @@
+# v1.5.2
+
+- Show an error when the device rejects a settings change and allow the same value to be saved again.
+- Keep the most recent language selection when packs load out of order and fall back to English if the selected pack is unavailable.
+- Fail incomplete builds before packaging and verify that the Android helper is in the ZIP.
+- Update the in-app download link from current main after publishing a release. Rerunning a release can repair the link without replacing its ZIP or rolling back a newer version.
+
 # v1.5.1
 
 - Check keybox validity and revocation automatically, and replace a keybox only after validating its replacement.
