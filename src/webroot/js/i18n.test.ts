@@ -109,10 +109,25 @@ describe('i18n', () => {
   });
 
   it('keeps English fallbacks when a pack fails to load', async () => {
+    stubFetchOk(AR_STRINGS);
+    await applyLanguage('ar', false);
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, json: async () => ({}) })));
     await applyLanguage('fr', false);
     expect(getTranslation('dialog_apply')).toBe('Apply');
-    expect(document.documentElement.lang).toBe('fr');
+    expect(document.documentElement.lang).toBe('en');
+  });
+
+  it('keeps the newest selection when an older pack finishes loading later', async () => {
+    let finish!: (response: unknown) => void;
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(resolve => { finish = resolve; })));
+    const previous = applyLanguage('ar', false);
+    await applyLanguage('en', false);
+    finish({ ok: true, json: async () => AR_STRINGS });
+    await previous;
+
+    expect(getCurrentLanguageCode()).toBe('en');
+    expect(document.documentElement.lang).toBe('en');
+    expect(getTranslation('dialog_apply')).toBe('Apply');
   });
 
   it('uses the preloaded language promise when one is registered', async () => {

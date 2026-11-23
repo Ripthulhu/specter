@@ -1,6 +1,9 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest'
 import { cfgGet, cfgSet, cfgInit, cfgInvalidate, setDataDir, migrateLocalStorage } from './cfg.js'
 import { exec } from './bridge.js'
+import { showToast } from './toast.js'
+
+vi.mock('./toast.js', () => ({ showToast: vi.fn() }))
 
 vi.mock('./bridge.js', () => ({
   exec: vi.fn(() => Promise.resolve({ stdout: '', stderr: '', code: 0 })),
@@ -106,6 +109,18 @@ describe('cfg (caching layer)', () => {
     expect(calls).toHaveLength(2)
     expect(calls[0]).toContain("'first'")
     expect(calls[1]).toContain("'second'")
+  })
+
+  it('reports a rejected device write and lets the same value retry', async () => {
+    vi.mocked(exec).mockResolvedValueOnce({ stdout: '', stderr: 'Permission denied', code: 1 })
+
+    expect(await cfgSet('theme', 'dark')).toBe(false)
+    await vi.waitFor(() => expect(showToast).toHaveBeenCalledWith('Failed to save', { type: 'error' }))
+    expect(localStorage.getItem('sp_cfg_theme')).toBeNull()
+
+    expect(await cfgSet('theme', 'dark')).toBe(true)
+    expect(localStorage.getItem('sp_cfg_theme')).toBe('dark')
+    expect(exec).toHaveBeenCalledTimes(2)
   })
 
   it('migrateLocalStorage migrates keys', async () => {

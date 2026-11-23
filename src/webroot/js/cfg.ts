@@ -82,13 +82,12 @@ async function readConfig(key: string): Promise<string | null> {
   return (result.stdout || '').trim() || null;
 }
 
-function writeConfig(key: string, val: string | undefined | null) {
-  if (!DATA_DIR) return Promise.resolve();
+async function writeConfig(key: string, val: string | undefined | null) {
+  if (!DATA_DIR) return;
   const cmd =
     `mkdir -p ${shellEscape(DATA_DIR + '/config/val')} && printf '%s' ${shellEscape(val || '')} > ${shellEscape(DATA_DIR + '/config/val/' + key + '.val')}`;
-  return bridgeExec(cmd)
-    .then(() => undefined)
-    .catch((err: unknown) => { console.warn('Config write failed for', key, err); });
+  const result = await bridgeExec(cmd);
+  if (result.code !== 0) throw new Error(result.stderr || `Exit code ${result.code}`);
 }
 
 /** Retrieve a config value by key. Checks the in-memory cache first, then reads from disk. Returns the stored value, `defaultValue`, or `null`. */
@@ -97,35 +96,42 @@ export async function cfgGet(key: string, defaultValue?: string): Promise<string
   // A complete snapshot already covers every existing .val file.
   if (snapshotComplete) return defaultValue;
   const val = await readConfig(key);
-  cache[key] = val;
+  if (!(key in cache)) cache[key] = val;
   return cache[key] ?? defaultValue;
 }
 
-const writeChains = new Map<string, Promise<void>>();
+const writeChains = new Map<string, Promise<boolean>>();
 
-/** Serialize disk writes per key so rapid toggles cannot land out of order. */
-function enqueueWrite(key: string, val: string | undefined | null): Promise<void> {
-  const previous = writeChains.get(key) || Promise.resolve();
-  const next = previous
-    .catch(() => {})
-    .then(() => writeConfig(key, val))
-    .catch((err: unknown) => console.warn('Config write failed for', key, err));
-  writeChains.set(key, next);
-  void next.finally(() => {
+/** Update the UI immediately and serialize saves to the same key. */
+export function cfgSet(key: string, val: string | undefined | null): Promise<boolean> {
+  const previous = writeChains.get(key);
+  if (key in cache && cache[key] === val) return previous ?? Promise.resolve(true);
+  cache[key] = val;
+
+  const next: Promise<boolean> = (previous ?? Promise.resolve()).then(async () => {
+    try {
+      await writeConfig(key, val);
+    } catch (err) {
+      if (writeChains.get(key) === next) {
+        cfgInvalidate(key);
+        void Promise.all([import('./toast.js'), import('./i18n.js')])
+          .then(([{ showToast }, { getTranslation }]) =>
+            showToast(getTranslation('sp_save_error') || 'Failed to save', { type: 'error' }),
+          ).catch(console.warn);
+      }
+      console.warn('Config write failed for', key, err);
+      return false;
+    }
+    try {
+      localStorage.setItem('sp_cfg_' + key, val ?? '');
+      localStorage.setItem('sp_cfg_ts', String(Date.now()));
+    } catch {}
+    return true;
+  }).finally(() => {
     if (writeChains.get(key) === next) writeChains.delete(key);
   });
+  writeChains.set(key, next);
   return next;
-}
-
-/** Set a config value both in cache and on disk. No-op when the value is unchanged. */
-export function cfgSet(key: string, val: string | undefined | null): Promise<void> {
-  if (key in cache && cache[key] === val) return Promise.resolve();
-  cache[key] = val;
-  try {
-    localStorage.setItem('sp_cfg_' + key, val ?? '');
-    localStorage.setItem('sp_cfg_ts', String(Date.now()));
-  } catch {}
-  return enqueueWrite(key, val);
 }
 
 /** Remove one key (or all keys when called without argument) from the in-memory cache. */
@@ -150,8 +156,8 @@ export async function migrateLocalStorage() {
     for (const [oldKey, newKey] of Object.entries(map)) {
       const val = localStorage.getItem(oldKey);
       if (val) {
+        await writeConfig(newKey, val);
         cache[newKey] = val;
-        writeConfig(newKey, val);
       }
     }
     localStorage.removeItem('themeMode');

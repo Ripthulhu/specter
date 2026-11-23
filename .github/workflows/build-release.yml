@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   release:
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
 
     steps:
@@ -74,6 +75,7 @@ jobs:
         run: |
           cd Module
           zip -r "../${{ steps.version.outputs.zip_name }}" .
+          unzip -tq "../${{ steps.version.outputs.zip_name }}" deps/classes.dex
 
       - name: Push module to Telegram channel
         if: github.repository == 'dpejoh/specter'
@@ -197,32 +199,40 @@ jobs:
               sys.exit(1)
           PY
 
-      - name: Create Release
+      - name: Publish release ZIP
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
+          ZIP_NAME: ${{ steps.version.outputs.zip_name }}
         run: |
-          gh release create "${{ steps.version.outputs.tag }}" \
-            --title "${{ steps.version.outputs.release_version }}" \
-            --notes-file release-notes.md \
-            "${{ steps.version.outputs.zip_name }}"
-
-      - name: Update update.json
-        run: |
-          ZIP_URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/${{ steps.version.outputs.zip_name }}"
-          jq --arg v "${{ steps.version.outputs.release_version }}" \
-             --argjson vc "${{ steps.version.outputs.version_code }}" \
-             --arg url "$ZIP_URL" \
-             '.version = $v | .versionCode = $vc | .zipUrl = $url' \
-             update.json > update_tmp.json && mv update_tmp.json update.json
-
-      - name: Commit version bump
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add update.json
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
+          if assets=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name'); then
+            if ! grep -Fxq -- "$ZIP_NAME" <<< "$assets"; then
+              gh release upload "$RELEASE_TAG" "$ZIP_NAME"
+            fi
           else
-            git commit -m "chore: bump update.json to v${{ steps.version.outputs.base_version }} [skip ci]"
+            gh release create "$RELEASE_TAG" --verify-tag \
+              --title "$RELEASE_VERSION" --notes-file release-notes.md "$ZIP_NAME"
+          fi
+
+      - name: Update update.json on main
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
+          VERSION_CODE: ${{ steps.version.outputs.version_code }}
+          ZIP_NAME: ${{ steps.version.outputs.zip_name }}
+        run: |
+          git fetch origin main
+          git worktree add --detach "$RUNNER_TEMP/specter-main" FETCH_HEAD
+          cd "$RUNNER_TEMP/specter-main"
+          ZIP_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${ZIP_NAME}"
+          jq --arg v "$RELEASE_VERSION" --argjson vc "$VERSION_CODE" --arg url "$ZIP_URL" \
+            'if .versionCode <= $vc then .version = $v | .versionCode = $vc | .zipUrl = $url else . end' \
+            update.json > update_tmp.json
+          mv update_tmp.json update.json
+          git add update.json
+          if ! git diff --cached --quiet; then
+            git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "chore: bump update.json to $RELEASE_VERSION [skip ci]"
             git push origin HEAD:main
           fi

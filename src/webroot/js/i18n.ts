@@ -17,6 +17,7 @@ export const SUPPORTED_LANGUAGES = [
 ];
 
 let _currentLangCode = 'auto';
+let languageRequest = 0;
 
 export function getCurrentLanguageCode(): string {
   return _currentLangCode;
@@ -50,6 +51,7 @@ export async function initI18n() {
 }
 
 export async function applyLanguage(langCode: string, notify = true) {
+  const request = ++languageRequest;
   _currentLangCode = langCode;
   cfgSet('lang', langCode);
   let target = langCode;
@@ -78,9 +80,14 @@ export async function applyLanguage(langCode: string, notify = true) {
     } catch { /* ignore corrupt cache */ }
 
     const next = await fetchLanguage(target);
+    if (request !== languageRequest) return;
     if (next && (!cached || JSON.stringify(next) !== JSON.stringify(cached))) {
       currentStrings = next;
       try { localStorage.setItem('i18n_' + target, JSON.stringify(next)); } catch {}
+    } else if (!cached) {
+      currentStrings = enStrings;
+      document.documentElement.dir = 'ltr';
+      document.documentElement.lang = 'en';
     }
   } else {
     currentStrings = enStrings;
