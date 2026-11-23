@@ -15,6 +15,10 @@
 
 ### Changes and fixes
 
+- Show a save error when the device rejects a setting and allow retrying the same value.
+- Keep the latest WebUI language selection when packs load out of order and use English if the selected pack is unavailable.
+- Verify the Android helper in build ZIPs and make release publishing and the in-app update link safe to retry.
+
 - HMA config generated on-device; downloaded config URL removed.
 - Auto Keybox page and HMA launch/reload toggles removed; refresh watch replaces Auto Keybox.
 - HMA auto-update off by default, 6h. Keybox watch 60m with auto-replace toggle.
