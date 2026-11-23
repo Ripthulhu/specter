@@ -5,7 +5,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main]
+    branches: [main, integrate-upstream-v2.0.0]
 
 jobs:
   build:
@@ -35,6 +35,7 @@ jobs:
         with:
           scandir: src
           severity: warning
+          version: "v0.11.0"
 
       - name: Run shell tests
         run: bash tests/run.sh
