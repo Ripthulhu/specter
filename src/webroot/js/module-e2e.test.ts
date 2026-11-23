@@ -46,10 +46,14 @@ describe('module.prop', () => {
     expect(Number(vc![1])).toBeGreaterThan(0)
   })
 
-  it('versionCode matches update.json', () => {
-    const updateJson = JSON.parse(readFileSync(resolve(PROJECT_ROOT, 'update.json'), 'utf8'))
-    const vc = moduleProp.match(/versionCode=(\d+)/)![1]
-    expect(Number(vc)).toBe(updateJson.versionCode)
+  it('stamps the version and versionCode from the source module', () => {
+    const source = readFileSync(resolve(PROJECT_ROOT, 'src/module.prop'), 'utf8')
+    const version = source.match(/^version=(.+)$/m)![1]!
+    const build = Number(source.match(/^versionCode=(\d+)$/m)![1])
+    const [major, minor, patch] = version.split('.').map(Number)
+    expect(moduleProp.match(/^version=(.+)$/m)![1]).toMatch(new RegExp('^v' + version.replaceAll('.', '\\.') + '-g[0-9a-f]+$'))
+    expect(Number(moduleProp.match(/^versionCode=(\d+)$/m)![1]))
+      .toBe(major! * 10000 + minor! * 1000 + patch! * 100 + build)
   })
 })
 
