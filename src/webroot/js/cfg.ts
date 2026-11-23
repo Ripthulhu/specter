@@ -53,26 +53,53 @@ async function readConfig(key: string): Promise<string | null> {
   return (result.stdout || '').trim() || null;
 }
 
-function writeConfig(key: string, val: string | undefined | null) {
-  if (!DATA_DIR) return Promise.resolve();
+async function writeConfig(key: string, val: string | undefined | null) {
+  if (!DATA_DIR) return;
   const cmd =
     `mkdir -p ${shellEscape(DATA_DIR + '/config/val')} && printf '%s' ${shellEscape(val || '')} > ${shellEscape(DATA_DIR + '/config/val/' + key + '.val')}`;
-  return bridgeExec(cmd).catch((err: any) => console.warn('Config write failed for', key, err));
+  const result = await bridgeExec(cmd);
+  if (result.code !== 0) throw new Error(result.stderr || `Exit code ${result.code}`);
 }
 
 /** Retrieve a config value by key. Checks the in-memory cache first, then reads from disk. Returns the stored value, `defaultValue`, or `null`. */
 export async function cfgGet(key: string, defaultValue?: string): Promise<string | undefined | null> {
   if (key in cache) return cache[key];
   const val = await readConfig(key);
-  cache[key] = val ?? defaultValue;
+  if (!(key in cache)) cache[key] = val ?? defaultValue;
   return cache[key];
 }
 
-/** Set a config value both in cache and on disk. */
-export function cfgSet(key: string, val: string | undefined | null) {
+const writeChains = new Map<string, Promise<boolean>>();
+
+/** Update the UI immediately and serialize saves to the same key. */
+export function cfgSet(key: string, val: string | undefined | null): Promise<boolean> {
+  const previous = writeChains.get(key);
+  if (previous && cache[key] === val) return previous;
   cache[key] = val;
-  try { localStorage.setItem('sp_cfg_' + key, val ?? ''); } catch {}
-  writeConfig(key, val);
+
+  const next: Promise<boolean> = (previous ?? Promise.resolve()).then(async () => {
+    try {
+      await writeConfig(key, val);
+    } catch (err) {
+      if (writeChains.get(key) === next) {
+        cfgInvalidate(key);
+        void Promise.all([import('./toast.js'), import('./i18n.js')])
+          .then(([{ showToast }, { getTranslation }]) =>
+            showToast(getTranslation('sp_save_error') || 'Failed to save', { type: 'error' }),
+          ).catch(console.warn);
+      }
+      console.warn('Config write failed for', key, err);
+      return false;
+    }
+    try {
+      localStorage.setItem('sp_cfg_' + key, val ?? '');
+    } catch {}
+    return true;
+  }).finally(() => {
+    if (writeChains.get(key) === next) writeChains.delete(key);
+  });
+  writeChains.set(key, next);
+  return next;
 }
 
 /** Remove one key (or all keys when called without argument) from the in-memory cache. */
@@ -96,8 +123,8 @@ export async function migrateLocalStorage() {
     for (const [oldKey, newKey] of Object.entries(map)) {
       const val = localStorage.getItem(oldKey);
       if (val) {
+        await writeConfig(newKey, val);
         cache[newKey] = val;
-        writeConfig(newKey, val);
       }
     }
     localStorage.removeItem('themeMode');

@@ -17,6 +17,7 @@ export const SUPPORTED_LANGUAGES = [
 ];
 
 let _currentLangCode = 'auto';
+let languageRequest = 0;
 
 export function getCurrentLanguageCode(): string {
   return _currentLangCode;
@@ -33,6 +34,7 @@ export async function initI18n() {
 }
 
 export async function applyLanguage(langCode: string) {
+  const request = ++languageRequest;
   _currentLangCode = langCode;
   cfgSet('lang', langCode);
   const available = ['en', 'zh', 'ru', 'fr', 'es', 'ar', 'pl', 'tr', 'id', 'hu', 'vn'];
@@ -42,20 +44,26 @@ export async function applyLanguage(langCode: string) {
     if (!available.includes(target)) target = 'en';
   }
 
-  if (target === 'en') {
-    currentStrings = enStrings;
-  } else {
+  currentStrings = enStrings;
+  if (target !== 'en') {
     try {
       const cached = localStorage.getItem('i18n_' + target);
-      if (cached) { currentStrings = JSON.parse(cached); }
+      if (cached) currentStrings = JSON.parse(cached);
+    } catch {}
+    let strings: Record<string, string> | null = null;
+    try {
       const res = await fetch('lang/' + target + '.json?ts=' + Date.now());
-      currentStrings = await res.json();
-      localStorage.setItem('i18n_' + target, JSON.stringify(currentStrings));
-    } catch { /* cached will be used if fetch failed */ }
+      if (res.ok) strings = await res.json();
+    } catch {}
+    if (request !== languageRequest) return;
+    if (strings) {
+      currentStrings = strings;
+      try { localStorage.setItem('i18n_' + target, JSON.stringify(strings)); } catch {}
+    }
   }
 
   applyTranslations();
-  document.documentElement.dir = target === 'ar' ? 'rtl' : 'ltr';
+  document.documentElement.dir = target === 'ar' && currentStrings !== enStrings ? 'rtl' : 'ltr';
   document.dispatchEvent(new CustomEvent('languageChanged', { detail: { langCode } }));
 }
 

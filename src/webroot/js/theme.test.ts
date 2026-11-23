@@ -44,6 +44,7 @@ describe('theme persistence', () => {
     expect(await cfgGet('theme_monet_switch')).toBe('1')
     expect(await cfgGet('theme_preset')).toBe('monet')
 
+    await vi.waitFor(() => expect(localStorage.getItem('sp_cfg_theme_monet_switch')).toBe('1'))
     // Simulate leaving and re-entering the Web UI (fresh page reload)
     cfgInvalidate()
     await cfgInit()
@@ -57,9 +58,9 @@ describe('theme persistence', () => {
 
   it('re-entering web UI with theme_monet_switch=0 restores fixed preset', async () => {
     // User disables dynamic color scheme and chooses yellow
-    cfgSet('theme_monet_switch', '0')
-    cfgSet('theme_fixed_preset', 'yellow')
-    cfgSet('theme_preset', 'yellow')
+    await cfgSet('theme_monet_switch', '0')
+    await cfgSet('theme_fixed_preset', 'yellow')
+    await cfgSet('theme_preset', 'yellow')
 
     // Simulate leaving and re-entering the Web UI
     cfgInvalidate()
