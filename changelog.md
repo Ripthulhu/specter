@@ -1,3 +1,36 @@
+# v2.0.0
+
+### Highlights
+
+- **WebUI performance fixes**: skeleton-first page loading, on-demand modules, one startup snapshot, no Home shell reads, heavy work off the UI thread.
+- **WebUI component system**: shared rows, sections, skeletons, tooltips and snackbar. Legacy list code removed.
+- **Material 3 Expressive**: grouped cards, shared shapes and type, themed branding, Monet/HCT palette.
+- **HMA-OSS scope manager**: per-app scope and blacklist editing, on-device presets, detector and Xposed handling. Auto-update off by default.
+- **Keybox catalog and watch**: R2 catalog with fallback, filters, details page, hourly revoked/expired replacement.
+- **App Targeting**: grouped rows, filters, search, async apply, blacklist pruning.
+- **Setup page**: native snapshot with shell fallback.
+- **Hot install**: userspace updates without reboot; mounted payloads still reboot.
+- **Boot Hash page**: custom hash and cache controls.
+- **10 locales**: Arabic, Spanish, French, Hungarian, Indonesian, Polish, Russian, Turkish, Vietnamese, Chinese.
+
+### Changes and fixes
+
+- Show a save error when the device rejects a setting and allow retrying the same value.
+- Keep the latest WebUI language selection when packs load out of order and use English if the selected pack is unavailable.
+- Verify the Android helper in build ZIPs and make release publishing and the in-app update link safe to retry.
+
+- HMA config generated on-device; downloaded config URL removed.
+- Auto Keybox page and HMA launch/reload toggles removed; refresh watch replaces Auto Keybox.
+- HMA auto-update off by default, 6h. Keybox watch 60m with auto-replace toggle.
+- Action pipeline non-interactive, skips auto-managed target/HMA jobs unless forced.
+- Save actions run out of process; Security Patch, Boot Hash and OMK stay open.
+- Keybox fixes: revocation serial matching, minified XML, expired roots, revoked entries.
+- Fork: verify keybox replacements before installation and convert PKCS#8 private keys for TEESimulator-RS.
+- Fork: retain Pixel 10 Android 17 fingerprint handling and verified module downloads.
+- Hot install: no leftover Magisk staging stub after reboot.
+- Also fixed: blacklist back navigation, fixed targets, HMA merge, theme persistence, log tabs, keybox filters, home truncation.
+- 1032 WebUI tests, 589 shell assertions, mksh emulation, UI coverage, fewer shell forks.
+
 # v1.5.2
 
 - Show an error when the device rejects a settings change and allow the same value to be saved again.
